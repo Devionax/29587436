@@ -1,0 +1,10 @@
+name = "React Router"
+roles = ["frontend", "backend"]
+webhooks_path = "/webhooks/app/uninstalled"
+
+[commands]
+# Generates the Prisma client against the current schema before dev starts.
+predev = "npm exec prisma generate"
+# Migrations are run explicitly (`npm run db:migrate:dev`) so a dev start never
+# mutates the database unexpectedly.
+dev = "npm exec react-router dev"

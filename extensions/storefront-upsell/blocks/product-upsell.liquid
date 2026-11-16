@@ -1,0 +1,36 @@
+{%- comment -%}
+  Product-page upsell block.
+
+  Renders an empty custom element; upsell.js requests offers from the app proxy
+  and fills it in. Nothing is rendered when the block has nothing to show, and
+  the app remains fully functional if JavaScript is unavailable.
+{%- endcomment -%}
+
+{{ 'upsell.css' | asset_url | stylesheet_tag }}
+<script src="{{ 'upsell.js' | asset_url }}" defer></script>
+
+<upsell-offers
+  data-endpoint="/apps/upsell/offers"
+  data-surface="product"
+  data-product-gid="gid://shopify/Product/{{ product.id }}"
+  data-product-variant-gid="{{ product.selected_or_first_available_variant.id | prepend: 'gid://shopify/ProductVariant/' }}"
+  {%- if block.settings.heading != blank %}
+    data-heading="{{ block.settings.heading | escape }}"
+  {%- endif %}
+  hidden
+></upsell-offers>
+
+{% schema %}
+{
+  "name": "Upsell offers (product)",
+  "target": "content",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading override",
+      "info": "Leave empty to use the heading configured in the app."
+    }
+  ]
+}
+{% endschema %}

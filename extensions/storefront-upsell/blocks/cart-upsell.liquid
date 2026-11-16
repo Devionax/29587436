@@ -1,0 +1,35 @@
+{%- comment -%}
+  Cart-page upsell block.
+
+  Works on the cart template. The cart itself is read with /cart.js so the app
+  never scrapes or depends on theme markup. Cart drawers are theme-specific and
+  are not injected into; merchants that use a drawer can add this block to their
+  cart page.
+{%- endcomment -%}
+
+{{ 'upsell.css' | asset_url | stylesheet_tag }}
+<script src="{{ 'upsell.js' | asset_url }}" defer></script>
+
+<upsell-offers
+  data-endpoint="/apps/upsell/offers"
+  data-surface="cart"
+  {%- if block.settings.heading != blank %}
+    data-heading="{{ block.settings.heading | escape }}"
+  {%- endif %}
+  hidden
+></upsell-offers>
+
+{% schema %}
+{
+  "name": "Upsell offers (cart)",
+  "target": "content",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading override",
+      "info": "Leave empty to use the heading configured in the app."
+    }
+  ]
+}
+{% endschema %}
