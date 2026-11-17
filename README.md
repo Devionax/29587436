@@ -1,25 +1,38 @@
-# Smart Upsell
+# Upsellora
 
 A multi-tenant Shopify app that increases average order value with merchant-managed
-product recommendations. V1 renders offers on **product pages and cart pages** via a
-theme app extension so it works on every Shopify plan with an Online Store 2.0 theme.
-A checkout-step experience is a separate, Shopify Plus-only module planned for later.
+product recommendations on the **product page**, in the **cart**, and **inside checkout**.
 
-> Working name: Smart Checkout Upsell.
+- **Product page and cart page** — a theme app extension renders the offers in
+  theme blocks. The widget evaluates the real cart through the Storefront Cart
+  API, recalculates after every cart change, and adds offers without duplicates.
+- **Pre-purchase** — a checkout UI extension block on Shopify Plus.
+- **Post-purchase** — a post-purchase extension once Shopify grants this app access.
+
+> Package name: `smart-checkout-upsell`.
 
 ## Project status
 
-**Phases 1–11 complete** (app foundation, multi-tenant data model with cross-shop
-tests, Shopify catalog sync, recommendation rule management, recommendation engine,
-shop settings, theme app extension + signed App Proxy storefront endpoint,
-storefront add-to-cart with hidden line-item attribution, analytics ingestion with
-an analytics page, Shopify-managed pricing with server-side entitlements, and
-production hardening: webhook idempotency, mandatory privacy webhooks, storefront
-rate limits and a health endpoint).
+**Production code complete for V1.** The admin uses the Upsellora structure —
+Dashboard, Offers, Analytics, Settings — with a seven-step offer workflow that
+combines manual product selection with automatic sources (recently removed and
+repeatedly added cart products). All four delivery surfaces are implemented:
 
-**Pending:** the Shopify Plus-only checkout-step extension (Phase 12) and manual
-QA on a real development store (theme blocks, add-to-cart, plan changes). No
-feature is considered shipped until it has run in the store.
+- `extensions/storefront-upsell` ships the `product-upsell` and `cart-upsell`
+  theme blocks. They call `/apps/upsell/offers` through the signed App Proxy and
+  read the live cart with `/cart.js`; manual (trigger-less) offers and
+  condition-based offers are evaluated server-side.
+- `extensions/pre-purchase-upsell` renders a `purchase.checkout.block.render` block
+  and calls `/api/checkout/offers` and `/api/checkout/events` with a verified
+  Shopify session token.
+- `extensions/post-purchase-upsell` runs `Checkout::PostPurchase::ShouldRender`
+  and `Render`, calls `/api/post-purchase/*` with the Shopify-issued purchase
+  token, and applies signed changesets to the order.
+
+**Pending external approvals and live QA:** pre-purchase needs a Shopify Plus
+store; post-purchase needs Shopify to grant post-purchase access and
+`POST_PURCHASE_ENABLED=true`; order attribution needs approval for protected
+customer data. No feature is considered shipped until it has run in a real store.
 
 See [PROJECT_LOG.md](PROJECT_LOG.md) for the phase history and known issues.
 
@@ -77,9 +90,9 @@ See [PROJECT_LOG.md](PROJECT_LOG.md) for the phase history and known issues.
 
    | Handle | Name | Limits in this codebase |
    | --- | --- | --- |
-   | `free` | Free | 1 rule, 3 offers per rule, 7-day analytics |
-   | `growth` | Growth | 10 rules, 10 offers per rule, 90-day analytics |
-   | `pro` | Pro | unlimited rules, 20 offers per rule, 365-day analytics |
+   | `free` | Free | 1 offer, up to 3 products per offer, 7-day analytics |
+   | `growth` | Growth | 10 offers, up to 10 products per offer, 90-day analytics |
+   | `pro` | Pro | unlimited offers, up to 20 products per offer, 365-day analytics |
 
    Set prices and trials in the dashboard; prices never live in code. Copy the app
    handle (the slug in `admin.shopify.com/store/<store>/apps/<handle>`) into
@@ -88,19 +101,63 @@ See [PROJECT_LOG.md](PROJECT_LOG.md) for the phase history and known issues.
    the active subscription through the Admin API and caches it (`Subscription`)
    for storefront and enforcement paths, refreshing at most hourly.
 
-7. **Enable the storefront surface**
+7. **Point both extensions at this deployment**
+
+   Each extension compiles its backend origin into the bundle because Shopify
+   does not proxy extension calls or inject environment variables at extension
+   build time. Set `APP_ORIGIN` in both files, with no trailing slash, to the same
+   origin as `SHOPIFY_APP_URL`:
+
+   - `extensions/pre-purchase-upsell/src/app-origin.js`
+   - `extensions/post-purchase-upsell/src/app-origin.js`
+
+   While the constant is empty, each extension renders nothing and logs one
+   warning; nothing breaks.
+
+8. **Deploy the app and extensions**
 
    ```bash
    npx shopify app deploy
    ```
 
-   This pushes the app version, which enables the App Proxy
-   (`/apps/upsell/*` → `/proxy/*`), publishes the theme extension and registers the
-   webhook subscriptions, including the mandatory privacy topics. In the
-   development store's theme editor, add **Upsell offers (product)** to a product
-   template and **Upsell offers (cart)** to the cart template, then turn on
-   recommendations under **Settings** in the app. Nothing renders on the storefront
-   until both steps are done.
+   This pushes the app version, registers the webhook subscriptions (including
+   the mandatory privacy topics), the App Proxy (`/apps/upsell/*` → `/proxy/*`)
+   and all three extensions (theme app extension, pre-purchase, post-purchase).
+
+9. **Add the storefront blocks in the theme editor**
+
+   In **Online Store → Themes → Customize**:
+
+   - Open the **Product** template and add the **Upsell offers** block from
+     "Apps" (block: `product-upsell`). Optionally set a heading override.
+   - Open the **Cart** template and add the **Upsell offers (cart)** block
+     (`cart-upsell`).
+
+   The blocks stay hidden until the endpoint returns eligible offers. Whether a
+   placement delivers is controlled in the app under **Settings → Storefront
+   placements** (product page and cart page, both on by default). The
+   "show offers in checkout" switch gates checkout only and does not affect the
+   theme blocks.
+
+   Offers appear when the offer is active, the rule's placement for that surface
+   is on, its trigger/condition matches the current cart, and the merchant has a
+   plan that allows it.
+
+10. **Turn on post-purchase only after Shopify grants access**
+
+    Post-purchase is access-gated by Shopify per app and store, and only one
+    post-purchase app can be active on a store. After the grant, set
+    `POST_PURCHASE_ENABLED=true` in `.env` and restart the app. The merchant can
+    then enable the post-purchase experience on an offer.
+
+## Free development and testing mode
+
+`DEV_TESTING_MODE=true` in `.env` skips all plan enforcement so every offer
+feature can be exercised without a paid plan: limits resolve to the Pro catalog
+and no subscription is read from or written to Shopify. The billing
+architecture is untouched — with the flag unset or `false`, the real subscription
+is read and enforced exactly as in production. Never leave the flag enabled on a
+live store.
 
 ## Commands
 
@@ -126,11 +183,13 @@ app/
   services/
     shop.server.ts         Tenant upsert, plan detection, uninstall marking
     tenant.server.ts       Resolves the authenticated shop for admin requests
-    rules.server.ts        Tenant-scoped rule CRUD (used by the admin UI)
+    rules.server.ts        Tenant-scoped offer CRUD (RecommendationRule table)
     catalog.server.ts      Admin product search, normalization, snapshot upsert
     product-sync.server.ts Product webhook -> Admin re-fetch -> snapshot
     recommendation-engine.ts   Pure matching/ranking over rules and snapshots
-    recommendations.server.ts  Loads a shop's active rules and runs the engine
+    recommendations.server.ts  Loads active offers, merges manual + automatic sources
+    cart-activity.server.ts    Cart webhook diffing for automatic sources
+    placements.server.ts   Plan-aware placement support (product, cart, checkout)
     settings.server.ts     Shop display settings and validation
     proxy-auth.server.ts   App Proxy signature check and tenant resolution
     analytics.server.ts    Event ingestion, dedupe and merchant totals
@@ -142,7 +201,8 @@ app/
     logger.server.ts       Structured JSON logging
     gid.ts                 Product/variant GID validation
     errors.ts              Typed service errors (including PlanLimitError)
-    rule-form.server.ts    Rule form parsing and validation
+    offer-id.ts            Synthetic ids for automatic offers
+    rule-form.server.ts    Offer form parsing and validation
     app-proxy.server.ts    App Proxy signature computation
     storefront-input.ts    Parsing of untrusted storefront context
     analytics-input.ts     Parsing of storefront analytics batches
@@ -150,15 +210,16 @@ app/
     rate-limit.server.ts   Best-effort fixed-window storefront limiting
   routes/
     app.tsx                Embedded layout and App Bridge nav
-    app._index.tsx         Dashboard: store connection and setup progress
-    app.catalog.tsx        Live catalog search and snapshot pinning
-    app.rules._index.tsx   Rule list and quick actions
-    app.rules.new.tsx      Create rule
-    app.rules.$ruleId.tsx  Edit/duplicate/delete rule
-    app.api.products.tsx   JSON product search for the rule editor
-    app.analytics.tsx      Impressions, adds and attributed orders
+    app._index.tsx         Dashboard: performance, active offers, setup checklist
+    app.offers._index.tsx  Offer list, filters and quick actions
+    app.offers.new.tsx     Create offer (seven-step workflow)
+    app.offers.$offerId.tsx  Edit/duplicate/delete an offer
+    app.api.products.tsx   JSON product search for the offer product picker
+    app.analytics.tsx      Impressions, clicks, adds and attributed revenue
     app.billing.tsx        Current plan, usage and Shopify plan selection link
-    app.settings.tsx       Global switch, placements, heading, offer cap
+    app.settings.tsx       Storefront switches, placements, heading, offer cap
+    app.rules*.tsx         Redirects for old rule bookmarks
+    app.catalog.tsx        Redirect to the offer workflow
     health.tsx             Public liveness/readiness probe (no tenant data)
     proxy.offers.tsx       Signed App Proxy endpoint for storefront offers
     proxy.events.tsx       Signed App Proxy endpoint for analytics events
@@ -168,13 +229,20 @@ app/
     webhooks.products.update.tsx
     webhooks.products.delete.tsx
     webhooks.orders.create.tsx
+    webhooks.carts.create.tsx
+    webhooks.carts.update.tsx
     webhooks.customers.data_request.tsx
     webhooks.customers.redact.tsx
     webhooks.shop.redact.tsx
   components/
-    rule-editor.tsx        Shared rule form and product picker
+    offer-wizard.tsx       Seven-step create/edit workflow
+    product-picker.tsx     Catalog search and variant selection
+    ui.tsx                 Metrics, empty states, badges and formatters
 extensions/
-  storefront-upsell/       Theme app extension: product/cart app blocks, JS, CSS
+  pre-purchase-upsell/     Checkout UI extension (purchase.checkout.block.render)
+  post-purchase-upsell/    Post-purchase UI extension (legacy extend/render API)
+  storefront-upsell/       Theme app extension: product-page and cart-page blocks,
+                           Cart API widget (upsell.js), styles and locales
 prisma/
   schema.prisma            Tenants, rules, catalog snapshots, analytics, billing
   migrations/              Committed SQL migrations
@@ -191,10 +259,12 @@ tests/
 - `Session` — Shopify session storage (access tokens live only here).
 - `Shop` — tenant root, keyed by the canonical `*.myshopify.com` domain.
 - `ShopSettings` — per-shop display configuration, created with the tenant.
-- `RecommendationRule` + `TriggerProduct` / `RecommendedProduct` — merchant rules and
-  their matching/recommended products.
+- `RecommendationRule` + `TriggerProduct` / `RecommendedProduct` — merchant offers,
+  their recommendation sources, schedule and selected products.
+- `CartActivity` / `CartWatch` — per-shop cart add/remove events and the last seen
+  cart lines per pseudonymous cart token, used by the automatic sources.
 - `ProductSnapshot` / `ProductVariantSnapshot` — local projection of products used in
-  rules, refreshed by product webhooks, so the storefront never calls Shopify live.
+  offers, refreshed by product webhooks, so the storefront never calls Shopify live.
 - `AnalyticsEvent` — deduplicated impression/add events per shop and session.
 - `OrderAttribution` — one row per tagged offer line on an order, written from the
   orders webhook; an association, not proof of incrementality.
@@ -206,11 +276,12 @@ the verified Shopify session, never from client-supplied input.
 
 ## Privacy and data retention
 
-Stored per shop: shop domain, name, currency and plan; display settings; recommendation
-rules with product/variant GIDs; catalog snapshots of the products those rules
-reference; analytics events (event type, surface, offer GIDs, a pseudonymous
-per-session key and timestamps); order attribution (order GID, offer GIDs, quantity,
-line subtotal and currency); the subscription cache; and webhook delivery receipts.
+Stored per shop: shop domain, name, currency and plan; display settings; offers
+with product/variant GIDs, sources and schedules; catalog snapshots of the products
+those offers reference; cart activity rows keyed by a pseudonymous cart token;
+analytics events (event type, surface, offer GIDs, a pseudonymous per-session key
+and timestamps); order attribution (order GID, offer GIDs, quantity, line subtotal
+and currency); the subscription cache; and webhook delivery receipts.
 
 Not stored: customer names, emails, addresses or phone numbers, payment data, IP
 addresses or user agents. Attribution is an association between an order and an
@@ -224,10 +295,11 @@ stored.
 
 ## Security notes
 
-- OAuth scopes are `read_products` and `read_orders`. No write scopes are requested.
-  `read_orders` exists only for order attribution, and order data is protected
-  customer data: public distribution needs Shopify approval, and the handler stores
-  no customer fields.
+- OAuth scopes are `read_products`, `read_orders` and `write_app_proxy`. The only
+  write scope is used for the App Proxy storefront endpoint; no store data is
+  written through the Admin API. `read_orders` exists only for order attribution,
+  and order data is protected customer data: public distribution needs Shopify
+  approval, and the handler stores no customer fields.
 - Access tokens are stored server-side and never sent to the browser.
 - Every webhook validates the Shopify HMAC signature. Handlers record the delivery
   id in `WebhookReceipt` and acknowledge a duplicate without reprocessing; a
@@ -239,22 +311,38 @@ stored.
   disclosure because no customer PII is stored: analytics carry a pseudonymous
   per-session key and attribution rows carry an order GID, never a customer
   identity.
+- Checkout extension requests are verified with Shopify's signed session token
+  (pre-purchase) or purchase token (post-purchase). The shop, signed-in state and
+  purchase contents come from the token, never from the request body.
+- A post-purchase changeset is signed only after the requested offer is
+  re-evaluated against that purchase; the variant and quantity always come from
+  server-side offer data.
 - Storefront requests arrive through the App Proxy and are verified against
   Shopify's query-string HMAC; the shop comes from the signed `shop` parameter, never
   from the request body or a widget attribute.
 - Analytics events are matched to offers owned by the verified shop, so a forged
   payload cannot write rows for another tenant.
-- Storefront endpoints are rate limited per shop in process memory (offers
-  120/min, events 60/min). This is per instance and best effort; it blunts loops and
-  accidental floods, not a distributed attacker.
+- Storefront and checkout endpoints are rate limited in process memory (App Proxy
+  offers 600/min and events 60/min per shop; checkout offers and events 120/min per
+  shop or purchase; post-purchase changeset signing 20/min per purchase). This is
+  per instance and best effort; it blunts loops and accidental floods, not a
+  distributed attacker.
 - Plan limits are enforced in services (`rules.server.ts` → `entitlement.server.ts`),
   not only in the UI, and the browser cannot grant itself a plan.
 - `.env` is gitignored; only `.env.example` is committed.
 
 ## Platform constraints
 
-- Checkout UI extensions (information/shipping/payment steps) require Shopify Plus.
-- Theme app extension app blocks require Online Store 2.0 themes.
+- Pre-purchase checkout extensions require Shopify Plus; the UI and backend both
+  report the experience as unavailable for other plans.
+- Post-purchase extensions require a Shopify grant for the app and store, and only
+  one post-purchase app can be active per store. Until then the deployment keeps
+  `POST_PURCHASE_ENABLED=false`.
+- Checkout extensions receive shipping country only when protected customer data
+  access is granted; otherwise country conditions fail closed.
+- Theme app extension app blocks require Online Store 2.0 themes. Both blocks are
+  added by the merchant in the theme editor; cart drawers are theme-specific and
+  are not injected into.
 - Shopify Starter has no theme and is not supported.
 - `read_orders` (order attribution) is protected customer data: a public app needs
   Shopify approval before order webhooks deliver real data. Until then everything

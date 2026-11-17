@@ -1,11 +1,30 @@
-import type { MatchMode, RuleStatus } from "@prisma/client";
-import type { OfferInput, RuleWriteInput, TriggerInput } from "../services/rules.server";
+import type {
+  ConditionField,
+  ConditionOperator,
+  Experience,
+  MatchMode,
+  OfferSource,
+  RuleStatus,
+} from "@prisma/client";
+import type {
+  ConditionGroupWrite,
+  OfferInput,
+  RuleWriteInput,
+  TriggerInput,
+} from "../services/rules.server";
+import {
+  CONDITION_LIMITS,
+  STOREFRONT_CONDITION_FIELDS,
+  normalizeCondition,
+  validateConditionTree,
+} from "./condition-schema";
+import { InvalidInputError } from "./errors";
 import { isProductGid, isVariantGid } from "./gid";
 
 /**
- * Parses and validates the rule editor form before anything reaches the
- * service layer. Everything here is untrusted input: browser-supplied shop
- * identity, prices and statuses are never read from the form.
+ * Parses and validates the offer form before anything reaches the service
+ * layer. Everything here is untrusted input: browser-supplied shop identity,
+ * prices, statuses and experience availability are never read from the form.
  */
 
 export type RuleFormErrors = Record<string, string>;
@@ -16,6 +35,8 @@ export type RuleFormResult =
 
 const RULE_STATUSES: RuleStatus[] = ["DRAFT", "ACTIVE", "PAUSED", "ARCHIVED"];
 const MATCH_MODES: MatchMode[] = ["ANY", "ALL"];
+const SOURCES: OfferSource[] = ["MANUAL", "RECENTLY_REMOVED", "REPEATED_ACTIVITY"];
+const EXPERIENCES: Experience[] = ["PRE_PURCHASE", "POST_PURCHASE"];
 
 const LIMITS = {
   name: 120,
@@ -26,7 +47,14 @@ const LIMITS = {
   offers: 20,
   maxOffersMax: 10,
   quantityMax: 100,
+  lookbackHoursMax: 2160,
+  minRepeatsMax: 20,
+  experienceHeadline: 120,
+  experienceBody: 400,
+  experienceCta: 40,
 } as const;
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 type RawTrigger = { productGid?: unknown; variantGid?: unknown };
 type RawOffer = {
@@ -36,9 +64,32 @@ type RawOffer = {
   minQuantity?: unknown;
   maxQuantity?: unknown;
 };
+type RawExperience = {
+  experience?: unknown;
+  enabled?: unknown;
+  headline?: unknown;
+  body?: unknown;
+  ctaLabel?: unknown;
+};
+type RawCondition = { field?: unknown; operator?: unknown; value?: unknown };
+
+export type RuleFormOptions = {
+  /** Resolved server-side from the shop plan; never from the form. */
+  prePurchaseAvailable?: boolean;
+  /** Resolved server-side from the post-purchase access flag. */
+  postPurchaseAvailable?: boolean;
+};
 
 function text(form: FormData, key: string): string {
   return String(form.get(key) ?? "").trim();
+}
+
+function cleanText(value: unknown, limit: number): string | null | "invalid" {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return "invalid";
+  const trimmed = value.trim();
+  if (trimmed.length > limit) return "invalid";
+  return trimmed === "" ? null : trimmed;
 }
 
 function integer(value: string, fallback: number): number {
@@ -57,11 +108,25 @@ function parseJsonArray<T>(raw: string): T[] | null {
   }
 }
 
-export function parseRuleForm(form: FormData): RuleFormResult {
+/**
+ * Polaris date fields submit YYYY-MM-DD. Start is inclusive at 00:00 UTC and the
+ * end date is inclusive through the end of that day.
+ */
+function parseDateField(value: string, endOfDay: boolean): Date | null | "invalid" {
+  if (!value) return null;
+  if (!DATE_ONLY.test(value)) return "invalid";
+  const date = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`);
+  return Number.isNaN(date.getTime()) ? "invalid" : date;
+}
+
+export function parseRuleForm(
+  form: FormData,
+  options: RuleFormOptions = {},
+): RuleFormResult {
   const errors: RuleFormErrors = {};
 
   const name = text(form, "name");
-  if (!name) errors.name = "Give the rule a name.";
+  if (!name) errors.name = "Give the offer a name.";
   else if (name.length > LIMITS.name) errors.name = `Keep the name under ${LIMITS.name} characters.`;
 
   const description = text(form, "description");
@@ -78,6 +143,10 @@ export function parseRuleForm(form: FormData): RuleFormResult {
   if (!RULE_STATUSES.includes(status as RuleStatus)) {
     errors.status = "Choose a valid status.";
   }
+
+  // Placement checkboxes are absent from the payload when unchecked.
+  const showOnProductPage = form.get("showOnProductPage") !== null;
+  const showOnCartPage = form.get("showOnCartPage") !== null;
 
   const matchMode = text(form, "matchMode") || "ANY";
   if (!MATCH_MODES.includes(matchMode as MatchMode)) {
@@ -98,20 +167,162 @@ export function parseRuleForm(form: FormData): RuleFormResult {
     errors.maxOffers = `Offer limit must be a whole number from 1 to ${LIMITS.maxOffersMax}, or empty.`;
   }
 
-  const showOnProductPage = form.get("showOnProductPage") !== null;
-  const showOnCartPage = form.get("showOnCartPage") !== null;
-  if (!showOnProductPage && !showOnCartPage) {
-    errors.surfaces = "Enable at least one placement.";
+  const rawExperiences = parseJsonArray<RawExperience>(
+    String(form.get("experiences") ?? ""),
+  );
+  const experiences: Array<{
+    experience: Experience;
+    enabled: boolean;
+    headline: string | null;
+    body: string | null;
+    ctaLabel: string | null;
+  }> = [];
+  if (rawExperiences === null) {
+    errors.experiences = "Experiences could not be read. Reload the page.";
+  } else if (rawExperiences.length === 0) {
+    errors.experiences = "Choose at least one checkout experience.";
+  } else {
+    const seen = new Set<Experience>();
+    for (const raw of rawExperiences) {
+      const experience = raw.experience;
+      if (
+        typeof experience !== "string" ||
+        !EXPERIENCES.includes(experience as Experience)
+      ) {
+        errors.experiences = "Choose a valid checkout experience.";
+        break;
+      }
+      if (seen.has(experience as Experience)) {
+        errors.experiences = "Each checkout experience can appear only once.";
+        break;
+      }
+      seen.add(experience as Experience);
+
+      if (typeof raw.enabled !== "boolean") {
+        errors.experiences = "Experience state could not be read. Reload the page.";
+        break;
+      }
+
+      const headline = cleanText(raw.headline, LIMITS.experienceHeadline);
+      const body = cleanText(raw.body, LIMITS.experienceBody);
+      const ctaLabel = cleanText(raw.ctaLabel, LIMITS.experienceCta);
+      if (headline === "invalid" || body === "invalid" || ctaLabel === "invalid") {
+        errors.experiences =
+          `Experience copy is too long: headline ${LIMITS.experienceHeadline}, ` +
+          `body ${LIMITS.experienceBody}, call to action ${LIMITS.experienceCta} characters.`;
+        break;
+      }
+
+      experiences.push({
+        experience: experience as Experience,
+        enabled: raw.enabled,
+        headline,
+        body,
+        ctaLabel,
+      });
+    }
+
+    const enabled = experiences.filter((entry) => entry.enabled);
+    // An offer needs at least one delivery surface: a storefront placement, a
+    // checkout experience, or both. Storefront placements work on every plan.
+    if (
+      !errors.experiences &&
+      enabled.length === 0 &&
+      !showOnProductPage &&
+      !showOnCartPage
+    ) {
+      errors.experiences =
+        "Choose at least one placement (product page or cart page) or checkout experience.";
+    }
+
+    if (
+      !errors.experiences &&
+      enabled.some((entry) => entry.experience === "PRE_PURCHASE") &&
+      !options.prePurchaseAvailable
+    ) {
+      errors.experiences =
+        "Pre-purchase checkout offers require Shopify Plus. Remove it or upgrade the store.";
+    }
+
+    if (
+      !errors.experiences &&
+      enabled.some((entry) => entry.experience === "POST_PURCHASE") &&
+      !options.postPurchaseAvailable
+    ) {
+      errors.experiences =
+        "Post-purchase offers are not enabled for this app yet. Shopify must grant post-purchase access before this experience can be turned on.";
+    }
+  }
+
+  const rawSources = parseJsonArray<string>(String(form.get("sources") ?? '["MANUAL"]'));
+  let sources: OfferSource[] = ["MANUAL"];
+  if (rawSources === null) {
+    errors.sources = "Recommendation sources could not be read. Reload the page.";
+  } else if (rawSources.length === 0) {
+    errors.sources = "Choose at least one recommendation source.";
+  } else if (
+    rawSources.some((source) => !SOURCES.includes(source as OfferSource)) ||
+    new Set(rawSources).size !== rawSources.length
+  ) {
+    errors.sources = "Choose valid, unique recommendation sources.";
+  } else {
+    sources = rawSources as OfferSource[];
+  }
+
+  const autoLookbackHours = integer(text(form, "autoLookbackHours"), 168);
+  if (
+    !Number.isInteger(autoLookbackHours) ||
+    autoLookbackHours < 1 ||
+    autoLookbackHours > LIMITS.lookbackHoursMax
+  ) {
+    errors.autoLookbackHours = `Lookback must be from 1 to ${LIMITS.lookbackHoursMax} hours.`;
+  }
+
+  const autoMaxOffersRaw = text(form, "autoMaxOffers");
+  const autoMaxOffers = autoMaxOffersRaw === "" ? null : integer(autoMaxOffersRaw, 0);
+  if (
+    autoMaxOffers !== null &&
+    (!Number.isInteger(autoMaxOffers) ||
+      autoMaxOffers < 1 ||
+      autoMaxOffers > LIMITS.maxOffersMax)
+  ) {
+    errors.autoMaxOffers = `Automatic offer limit must be 1 to ${LIMITS.maxOffersMax}, or empty.`;
+  }
+
+  const autoMinRepeats = integer(text(form, "autoMinRepeats"), 2);
+  if (
+    !Number.isInteger(autoMinRepeats) ||
+    autoMinRepeats < 1 ||
+    autoMinRepeats > LIMITS.minRepeatsMax
+  ) {
+    errors.autoMinRepeats = `Repeats must be a whole number from 1 to ${LIMITS.minRepeatsMax}.`;
+  }
+
+  const startsAt = parseDateField(text(form, "startsAt"), false);
+  if (startsAt === "invalid") errors.startsAt = "Enter a valid start date.";
+  const endsAt = parseDateField(text(form, "endsAt"), true);
+  if (endsAt === "invalid") errors.endsAt = "Enter a valid end date.";
+  if (
+    startsAt !== "invalid" &&
+    endsAt !== "invalid" &&
+    startsAt &&
+    endsAt &&
+    endsAt <= startsAt
+  ) {
+    errors.endsAt = "The end date must be on or after the start date.";
   }
 
   const rawTriggers = parseJsonArray<RawTrigger>(String(form.get("triggers") ?? ""));
   const triggers: TriggerInput[] = [];
   if (rawTriggers === null) {
     errors.triggers = "Trigger products could not be read. Reload the page.";
-  } else if (rawTriggers.length === 0) {
-    errors.triggers = "Add at least one trigger product.";
+  } else if (rawTriggers.length === 0 && !sources.includes("MANUAL")) {
+    // A trigger-less rule is a manual ("any cart") audience; without the Manual
+    // source the engine would never produce its offers.
+    errors.triggers =
+      "Add at least one trigger product, or include Manual selection to offer to any cart.";
   } else if (rawTriggers.length > LIMITS.triggers) {
-    errors.triggers = `A rule can have at most ${LIMITS.triggers} trigger products.`;
+    errors.triggers = `An offer can have at most ${LIMITS.triggers} trigger products.`;
   } else {
     rawTriggers.forEach((raw, index) => {
       const productGid = typeof raw.productGid === "string" ? raw.productGid : "";
@@ -129,21 +340,19 @@ export function parseRuleForm(form: FormData): RuleFormResult {
     });
   }
 
-  const rawOffers = parseJsonArray<RawOffer>(String(form.get("offers") ?? ""));
+  const rawOffers = parseJsonArray<RawOffer>(String(form.get("offers") ?? "[]"));
   const offers: OfferInput[] = [];
   if (rawOffers === null) {
     errors.offers = "Offers could not be read. Reload the page.";
-  } else if (rawOffers.length === 0) {
-    errors.offers = "Add at least one offer product.";
   } else if (rawOffers.length > LIMITS.offers) {
-    errors.offers = `A rule can have at most ${LIMITS.offers} offers.`;
+    errors.offers = `An offer can have at most ${LIMITS.offers} products.`;
   } else {
     rawOffers.forEach((raw, index) => {
       const productGid = typeof raw.productGid === "string" ? raw.productGid : "";
       const variantGid = typeof raw.variantGid === "string" ? raw.variantGid : "";
 
       if (!isProductGid(productGid) || !isVariantGid(variantGid)) {
-        errors.offers = `Offer ${index + 1} must be a product variant.`;
+        errors.offers = `Product ${index + 1} must be a product variant.`;
         return;
       }
 
@@ -162,7 +371,7 @@ export function parseRuleForm(form: FormData): RuleFormResult {
         defaultQuantity > maxQuantity
       ) {
         errors.offers =
-          `Offer ${index + 1} quantities must satisfy 1 ≤ min ≤ default ≤ max ≤ ${LIMITS.quantityMax}.`;
+          `Product ${index + 1} quantities must satisfy 1 ≤ min ≤ default ≤ max ≤ ${LIMITS.quantityMax}.`;
         return;
       }
 
@@ -175,6 +384,77 @@ export function parseRuleForm(form: FormData): RuleFormResult {
         position: index,
       });
     });
+
+    if (!errors.offers && sources.includes("MANUAL") && rawOffers.length === 0) {
+      errors.offers =
+        "Add at least one product for the Manual source, or remove Manual from your sources.";
+    }
+  }
+
+  // Conditions are optional. The wizard submits one root group; an edit of a
+  // rule whose stored tree is more advanced sends `conditionsLocked=1` so the
+  // tree is never replaced by this flat form.
+  const conditionsLocked = form.get("conditionsLocked") === "1";
+  const conditionsAllowed = new Set<ConditionField>(STOREFRONT_CONDITION_FIELDS);
+  let conditions: ConditionGroupWrite[] | undefined;
+  if (!conditionsLocked) {
+    const rawConditions = parseJsonArray<RawCondition>(
+      String(form.get("conditions") ?? "[]"),
+    );
+    const joinRaw = text(form, "conditionJoin") || "AND";
+
+    if (rawConditions === null) {
+      errors.conditions = "Conditions could not be read. Reload the page.";
+    } else if (rawConditions.length > 0) {
+      if (joinRaw !== "AND" && joinRaw !== "OR") {
+        errors.conditions = "Choose a valid condition join.";
+      } else if (rawConditions.length > CONDITION_LIMITS.maxConditions) {
+        errors.conditions = `An offer can have at most ${CONDITION_LIMITS.maxConditions} conditions.`;
+      } else {
+        const normalized: ConditionGroupWrite["conditions"] = [];
+        for (const raw of rawConditions) {
+          if (
+            typeof raw.field !== "string" ||
+            !conditionsAllowed.has(raw.field as ConditionField) ||
+            typeof raw.operator !== "string"
+          ) {
+            errors.conditions = "Choose a supported condition field and operator.";
+            break;
+          }
+          try {
+            const result = normalizeCondition({
+              field: raw.field as ConditionField,
+              operator: raw.operator as ConditionOperator,
+              value: raw.value,
+            });
+            normalized.push(result);
+          } catch (error) {
+            errors.conditions =
+              error instanceof InvalidInputError
+                ? error.message
+                : "A condition is invalid.";
+            break;
+          }
+        }
+
+        if (!errors.conditions) {
+          const tree: ConditionGroupWrite[] = [
+            { joinOp: joinRaw as "AND" | "OR", conditions: normalized },
+          ];
+          try {
+            validateConditionTree(tree);
+            conditions = tree;
+          } catch (error) {
+            errors.conditions =
+              error instanceof InvalidInputError
+                ? error.message
+                : "The condition tree is invalid.";
+          }
+        }
+      }
+    } else {
+      conditions = [];
+    }
   }
 
   if (Object.keys(errors).length > 0) {
@@ -193,6 +473,15 @@ export function parseRuleForm(form: FormData): RuleFormResult {
       maxOffers,
       showOnProductPage,
       showOnCartPage,
+      sources,
+      experiences,
+      conditions,
+      autoLookbackHours,
+      autoMaxOffers,
+      autoMinRepeats,
+      prioritizeRepeats: form.get("prioritizeRepeats") !== null,
+      startsAt: startsAt === "invalid" ? null : startsAt,
+      endsAt: endsAt === "invalid" ? null : endsAt,
       triggers,
       offers,
     },

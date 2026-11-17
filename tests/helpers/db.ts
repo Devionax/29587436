@@ -6,7 +6,7 @@ export const prisma = new PrismaClient({
 
 export async function createShop(
   suffix: string,
-  options: { plan?: "FREE" | "GROWTH" | "PRO" } = {},
+  options: { plan?: "FREE" | "GROWTH" | "PRO"; ianaTimezone?: string } = {},
 ) {
   const id = `${suffix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const plan = options.plan ?? "PRO";
@@ -28,6 +28,7 @@ export async function createShop(
       name: `Test shop ${suffix}`,
       installationStatus: "INSTALLED",
       installedAt: new Date(),
+      ...(options.ianaTimezone ? { ianaTimezone: options.ianaTimezone } : {}),
       settings: { create: {} },
       ...(subscription ? { subscription } : {}),
     },

@@ -3,7 +3,7 @@ import { searchProducts } from "../services/catalog.server";
 import { requireShopContext } from "../services/tenant.server";
 import { logger, toErrorMessage } from "../utils/logger.server";
 
-/** JSON product search for the rule editor's product picker. */
+/** JSON product search for the offer wizard's product picker. */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { shop, admin } = await requireShopContext(request);
   const url = new URL(request.url);

@@ -1,9 +1,13 @@
 /**
  * Storefront upsell widget.
  *
- * Renders offers requested from the app proxy, adds them to the existing
- * Shopify cart with the Cart AJAX API, and reports permitted analytics events.
+ * Requests offers from the app proxy, keeps them in sync with the live cart,
+ * adds offers with the Cart AJAX API and reports permitted analytics events.
  * All dynamic text is written with textContent; no HTML is injected.
+ *
+ * Cart changes are detected at the network boundary (fetch and XHR calls to
+ * /cart/*) plus the events themes commonly dispatch, so the widget works with
+ * any theme rather than relying on one theme's internal cart API.
  */
 (function () {
   if (window.customElements && customElements.get("upsell-offers")) return;
@@ -13,9 +17,29 @@
   var GID_VARIANT = /^gid:\/\/shopify\/ProductVariant\/(\d+)$/;
   var MAX_CART_LINES = 50;
   var SESSION_STORAGE_KEY = "scu_session";
+  var REFRESH_DEBOUNCE_MS = 120;
+
   // Variants with an add request in flight, so a double click cannot add twice.
   var adding = {};
   var instanceCount = 0;
+  var refreshers = [];
+  var refreshTimer = null;
+  var networkHooked = false;
+  var eventsBound = false;
+
+  // Every way a theme or cart app mutates the cart goes through these paths.
+  var CART_MUTATION = /\/cart\/(add|change|update|clear|remove)(\.js)?([?#]|$)/;
+  var CART_EVENTS = [
+    "cart:updated",
+    "cart:refresh",
+    "cart:change",
+    "cart:add",
+    "shopify:cart:updated",
+    "shopify:cart:refresh",
+    "cart-drawer:updated",
+    "ajaxCart.afterCartLoad",
+    "shopify:section:load",
+  ];
 
   /**
    * Line item properties prefixed with an underscore are hidden from the buyer
@@ -108,15 +132,36 @@
     return node;
   }
 
-  function cartLines() {
-    return fetch("/cart.js", { headers: { Accept: "application/json" } })
+  /**
+   * /cart.js reports minor units in the buyer's presentment currency. Subtotal
+   * conditions are stored in shop currency, so a mismatch is reported as
+   * unknown rather than relabelled.
+   */
+  function shopSubtotal(cart) {
+    var active = window.Shopify && window.Shopify.currency && window.Shopify.currency.active;
+    if (active && cart.currency && active !== cart.currency) return null;
+    var cents = Number(cart.items_subtotal_price);
+    if (!isFinite(cents) || cents < 0) return null;
+    return Math.round(cents) / 100;
+  }
+
+  /**
+   * Resolves to null when the cart cannot be read. Callers keep whatever is on
+   * screen in that case instead of flashing the region away on a network blip.
+   */
+  function readCart() {
+    return fetch("/cart.js", {
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+    })
       .then(function (response) {
-        if (!response.ok) return [];
+        if (!response.ok) return null;
         return response.json();
       })
       .then(function (cart) {
-        var items = cart && Array.isArray(cart.items) ? cart.items.slice(0, MAX_CART_LINES) : [];
-        return items
+        if (!cart || !Array.isArray(cart.items)) return null;
+        var lines = cart.items
+          .slice(0, MAX_CART_LINES)
           .map(function (item) {
             return {
               productGid: item.product_id
@@ -131,10 +176,89 @@
           .filter(function (line) {
             return line.productGid || line.variantGid;
           });
+        return { lines: lines, subtotal: shopSubtotal(cart) };
       })
       .catch(function () {
-        return [];
+        return null;
       });
+  }
+
+  function scheduleAll() {
+    if (refreshTimer) window.clearTimeout(refreshTimer);
+    refreshTimer = window.setTimeout(function () {
+      refreshTimer = null;
+      refreshers.forEach(function (refresh) {
+        refresh();
+      });
+    }, REFRESH_DEBOUNCE_MS);
+  }
+
+  function hookNetworkOnce() {
+    if (networkHooked) return;
+    networkHooked = true;
+
+    if (typeof window.fetch === "function") {
+      var originalFetch = window.fetch;
+      window.fetch = function (input) {
+        var url = "";
+        try {
+          url =
+            typeof input === "string"
+              ? input
+              : input && typeof input.url === "string"
+                ? input.url
+                : "";
+        } catch (error) {
+          url = "";
+        }
+        var promise = originalFetch.apply(this, arguments);
+        if (url && CART_MUTATION.test(url)) {
+          // Refresh after the request settles, whichever way it went.
+          promise.then(scheduleAll, scheduleAll);
+        }
+        return promise;
+      };
+    }
+
+    if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
+      var proto = window.XMLHttpRequest.prototype;
+      var originalOpen = proto.open;
+      var originalSend = proto.send;
+
+      proto.open = function (method, url) {
+        try {
+          this.__scuCartMutation =
+            typeof url === "string" && CART_MUTATION.test(url);
+        } catch (error) {
+          this.__scuCartMutation = false;
+        }
+        return originalOpen.apply(this, arguments);
+      };
+
+      proto.send = function () {
+        if (this.__scuCartMutation) {
+          this.addEventListener("loadend", scheduleAll);
+        }
+        return originalSend.apply(this, arguments);
+      };
+    }
+  }
+
+  function bindEventsOnce() {
+    if (eventsBound) return;
+    eventsBound = true;
+
+    CART_EVENTS.forEach(function (name) {
+      document.addEventListener(name, scheduleAll, false);
+    });
+    window.addEventListener("pageshow", scheduleAll, false);
+    document.addEventListener(
+      "visibilitychange",
+      function () {
+        if (!document.hidden) scheduleAll();
+      },
+      false,
+    );
   }
 
   function buildCard(offer, surface, widget) {
@@ -235,6 +359,11 @@
           status.textContent = "Added to cart.";
           addButton.textContent = "Added";
           quantity.disabled = true;
+
+          // Re-evaluate immediately; the network hook schedules the same thing
+          // once the add request settles.
+          scheduleAll();
+
           widget.dispatchEvent(
             new CustomEvent("upsell:added", {
               bubbles: true,
@@ -314,18 +443,26 @@
 
   class UpsellOffers extends HTMLElement {
     connectedCallback() {
-      if (this.dataset.rendered === "true") return;
-      this.dataset.rendered = "true";
+      var self = this;
+
+      if (this._initialized) {
+        if (!this._designMode) this.refresh();
+        return;
+      }
+      this._initialized = true;
       this._instanceId = String(++instanceCount);
+      this._surface = this.dataset.surface === "cart" ? "cart" : "product";
+      this._endpoint = this.dataset.endpoint || OFFERS_ENDPOINT;
+      this._productGid = this.dataset.productGid || "";
+      this._productVariantGid = this.dataset.productVariantGid || "";
+      this._loggedIn = this.dataset.customerLoggedIn === "true";
+      this._generation = 0;
+      this._payloadKey = null;
+      this._renderedOnce = false;
+      this._designMode = Boolean(window.Shopify && window.Shopify.designMode);
 
-      const self = this;
-      const surface = this.dataset.surface === "cart" ? "cart" : "product";
-      const endpoint = this.dataset.endpoint || OFFERS_ENDPOINT;
-      const productGid = this.dataset.productGid || "";
-      const productVariantGid = this.dataset.productVariantGid || "";
-
-      if (window.Shopify && window.Shopify.designMode) {
-        const placeholder = element(
+      if (this._designMode) {
+        var placeholder = element(
           "p",
           "scu-upsell__placeholder",
           "Upsell offers appear here on the live storefront.",
@@ -336,43 +473,70 @@
         return;
       }
 
-      cartLines()
-        .then(function (lines) {
-          if (surface === "product" && productGid) {
-            const known = lines.some(function (line) {
-              return productVariantGid && line.variantGid === productVariantGid;
-            });
-            if (!known) {
-              lines.push({
-                productGid: productGid,
-                variantGid: GID_VARIANT.test(productVariantGid) ? productVariantGid : null,
-                quantity: 1,
-              });
+      this._refresh = function () {
+        self.refresh();
+      };
+      refreshers.push(this._refresh);
+
+      hookNetworkOnce();
+      bindEventsOnce();
+      this.refresh();
+    }
+
+    disconnectedCallback() {
+      var index = refreshers.indexOf(this._refresh);
+      if (index !== -1) refreshers.splice(index, 1);
+      this._generation += 1;
+    }
+
+    refresh() {
+      var self = this;
+      var generation = ++this._generation;
+
+      readCart()
+        .then(function (cart) {
+          // A newer refresh started while the cart was loading; drop this one.
+          if (generation !== self._generation) return null;
+          if (!cart) return null;
+
+          var params = new URLSearchParams();
+          params.set("surface", self._surface);
+          if (self._productGid) {
+            params.set("product", self._productGid);
+            if (GID_VARIANT.test(self._productVariantGid)) {
+              params.set("variant", self._productVariantGid);
             }
           }
-
-          const params = new URLSearchParams();
-          params.set("surface", surface);
-          if (productGid) params.set("product", productGid);
-          params.set("cart", JSON.stringify(lines.slice(0, MAX_CART_LINES)));
-
-          return fetch(endpoint + "?" + params.toString(), {
-            headers: { Accept: "application/json" },
-          });
-        })
-        .then(function (response) {
-          if (!response.ok) return null;
-          return response.json();
-        })
-        .then(function (payload) {
-          if (!payload) return;
-          if (self.dataset.heading) {
-            payload.heading = self.dataset.heading;
+          params.set("cart", JSON.stringify(cart.lines.slice(0, MAX_CART_LINES)));
+          if (cart.subtotal !== null) {
+            params.set("subtotal", String(cart.subtotal));
           }
-          render(self, payload, surface);
+          params.set("loggedIn", self._loggedIn ? "1" : "0");
+
+          return fetch(self._endpoint + "?" + params.toString(), {
+            headers: { Accept: "application/json" },
+            credentials: "same-origin",
+          })
+            .then(function (response) {
+              if (!response.ok) return null;
+              return response.json();
+            })
+            .then(function (payload) {
+              if (generation !== self._generation || !payload) return;
+              if (self.dataset.heading) {
+                payload.heading = self.dataset.heading;
+              }
+              // Re-rendering identical offers would reset card state and emit
+              // duplicate impressions, so only act when the payload changed.
+              var key = JSON.stringify([payload.enabled, payload.heading, payload.offers]);
+              if (key === self._payloadKey) return;
+              self._payloadKey = key;
+              self._renderedOnce = true;
+              render(self, payload, self._surface);
+            });
         })
         .catch(function () {
-          self.hidden = true;
+          if (!self._renderedOnce) self.hidden = true;
         });
     }
   }

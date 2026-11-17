@@ -1,0 +1,6 @@
+# Shopify CLI adds `uid` on the first interactive registration/deploy; the file
+# is kept uid-less so it can be linked from a fresh checkout without conflict.
+name = "Upsellora post-purchase upsell"
+handle = "post-purchase-upsell"
+type = "checkout_post_purchase"
+uid = "605817b1-8b84-d458-6e77-878311e962ab7fca9c3b"

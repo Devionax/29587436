@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import db from "../../app/db.server";
 import {
   getAnalyticsSummary,
+  getRulePerformance,
   recordStorefrontEvents,
 } from "../../app/services/analytics.server";
 import {
@@ -20,6 +21,8 @@ function event(offerId: string, eventType: "IMPRESSION" | "ADD_SUCCESS", key: st
   return {
     eventType,
     surface: "PRODUCT_PAGE" as const,
+    experience: null,
+    declineReason: null,
     offerId,
     sessionKey: SESSION,
     dedupeKey: key,
@@ -34,6 +37,7 @@ function orderPayload(offerId: string, variantId: number, quantity = 2) {
     customer: { email: "buyer@example.com" },
     line_items: [
       {
+        product_id: 502,
         variant_id: variantId,
         quantity,
         price: "19.00",
@@ -140,13 +144,64 @@ describe("analytics ingestion and order attribution", () => {
     expect(other.addAttempts).toBe(0);
   });
 
+  it("stores the checkout experience and decline reason as dimensions", async () => {
+    const inserted = await recordStorefrontEvents(shopA.id, [
+      {
+        eventType: "OFFER_DECLINED",
+        surface: "CHECKOUT",
+        experience: "POST_PURCHASE",
+        declineReason: "OUT_OF_STOCK",
+        offerId: offerA,
+        sessionKey: SESSION,
+        dedupeKey: `${SESSION}:declined:1`,
+      },
+      {
+        eventType: "OFFER_ACCEPTED",
+        surface: "CHECKOUT",
+        experience: "PRE_PURCHASE",
+        declineReason: null,
+        offerId: offerA2,
+        sessionKey: SESSION,
+        dedupeKey: `${SESSION}:accepted:1`,
+      },
+    ]);
+
+    expect(inserted).toBe(2);
+
+    const declined = await prisma.analyticsEvent.findFirstOrThrow({
+      where: { shopId: shopA.id, dedupeKey: `${shopA.id}:${SESSION}:declined:1` },
+    });
+    expect(declined.experience).toBe("POST_PURCHASE");
+    expect(declined.declineReason).toBe("OUT_OF_STOCK");
+
+    // Rows written before experiences existed keep a null dimension.
+    const legacy = await prisma.analyticsEvent.findFirstOrThrow({
+      where: { shopId: shopA.id, dedupeKey: `${shopA.id}:${SESSION}:impression:1` },
+    });
+    expect(legacy.experience).toBeNull();
+    expect(legacy.declineReason).toBeNull();
+
+    const otherShop = await prisma.analyticsEvent.count({
+      where: { shopId: shopB.id },
+    });
+    expect(otherShop).toBe(0);
+  });
+
   it("parses an order that carries an offer marker", () => {
     const parsed = attributedOrderFromWebhook(orderPayload(offerA, 50201));
 
     expect(parsed).toEqual({
       orderGid: "gid://shopify/Order/9001",
       currencyCode: "USD",
-      lines: [{ offerId: offerA, variantGid: OFFER_VARIANT, quantity: 2, price: "19.00" }],
+      lines: [
+        {
+          offerId: offerA,
+          productGid: "gid://shopify/Product/502",
+          variantGid: OFFER_VARIANT,
+          quantity: 2,
+          price: "19.00",
+        },
+      ],
     });
     expect(JSON.stringify(parsed)).not.toContain("buyer@example.com");
   });
@@ -180,6 +235,7 @@ describe("analytics ingestion and order attribution", () => {
     const payload = orderPayload(offerA2, 50301, 1);
     payload.admin_graphql_api_id = "gid://shopify/Order/9002";
     payload.line_items.push({
+      product_id: 502,
       variant_id: 50201,
       quantity: 1,
       price: "19.00",
@@ -218,5 +274,60 @@ describe("analytics ingestion and order attribution", () => {
     expect(summary.topOffers[0]).toMatchObject({ productGid: "gid://shopify/Product/502" });
     expect(summary.topOffers[0]?.title).toBeNull();
     expect(summary.topOffers[0]?.adds).toBe(1);
+  });
+
+  it("records automatic offers only for a rule the shop owns", async () => {
+    const autoOffer = `auto:${ruleA.id}:502:50201`;
+
+    expect(
+      await recordStorefrontEvents(shopA.id, [
+        event(autoOffer, "IMPRESSION", `${SESSION}:auto:owned`),
+      ]),
+    ).toBe(1);
+
+    const stored = await prisma.analyticsEvent.findFirstOrThrow({
+      where: { shopId: shopA.id, dedupeKey: `${shopA.id}:${SESSION}:auto:owned` },
+    });
+    expect(stored.ruleId).toBe(ruleA.id);
+    expect(stored.offerProductGid).toBe("gid://shopify/Product/502");
+    expect(stored.offerVariantGid).toBe(OFFER_VARIANT);
+
+    expect(
+      await recordStorefrontEvents(shopA.id, [
+        event("auto:foreign-rule-id:502:50201", "IMPRESSION", `${SESSION}:auto:foreign`),
+      ]),
+    ).toBe(0);
+  });
+
+  it("attributes automatic offers by rule, product and variant", async () => {
+    const autoOffer = `auto:${ruleA.id}:502:50201`;
+
+    const owned = orderPayload(autoOffer, 50201, 1);
+    owned.admin_graphql_api_id = "gid://shopify/Order/9005";
+    expect(await attributeOrder(shopA.id, attributedOrderFromWebhook(owned)!)).toBe(1);
+
+    const wrongProduct = orderPayload(autoOffer, 50201, 1);
+    wrongProduct.admin_graphql_api_id = "gid://shopify/Order/9006";
+    (wrongProduct.line_items[0] as Record<string, unknown>).product_id = 999;
+    expect(
+      await attributeOrder(shopA.id, attributedOrderFromWebhook(wrongProduct)!),
+    ).toBe(0);
+
+    const foreignRule = orderPayload("auto:foreign-rule-id:502:50201", 50201, 1);
+    foreignRule.admin_graphql_api_id = "gid://shopify/Order/9007";
+    expect(
+      await attributeOrder(shopA.id, attributedOrderFromWebhook(foreignRule)!),
+    ).toBe(0);
+  });
+
+  it("aggregates per-offer performance for the offer pages", async () => {
+    const performance = await getRulePerformance(shopA.id);
+    const stats = performance.get(ruleA.id);
+
+    expect(stats).toBeDefined();
+    expect(stats!.impressions).toBeGreaterThanOrEqual(1);
+    expect(stats!.adds).toBeGreaterThanOrEqual(1);
+    expect(stats!.attributedRevenue).toBe("95.00");
+    expect(performance.get("not-a-rule")).toBeUndefined();
   });
 });

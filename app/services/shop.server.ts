@@ -10,6 +10,7 @@ const SHOP_IDENTITY_QUERY = `#graphql
       name
       myshopifyDomain
       currencyCode
+      ianaTimezone
       plan {
         publicDisplayName
         shopifyPlus
@@ -24,6 +25,7 @@ type ShopIdentityResponse = {
       name: string;
       myshopifyDomain: string;
       currencyCode: string;
+      ianaTimezone: string;
       plan: {
         publicDisplayName: string;
         shopifyPlus: boolean;
@@ -36,6 +38,7 @@ type ShopIdentityResponse = {
 export type ShopIdentity = {
   name: string | null;
   currencyCode: string | null;
+  ianaTimezone: string | null;
   planName: string | null;
   isPlus: boolean;
 };
@@ -60,6 +63,7 @@ export async function fetchShopIdentity(
   return {
     name: shop.name ?? null,
     currencyCode: shop.currencyCode ?? null,
+    ianaTimezone: shop.ianaTimezone ?? null,
     planName: shop.plan?.publicDisplayName ?? null,
     isPlus: Boolean(shop.plan?.shopifyPlus),
   };
@@ -86,6 +90,7 @@ export async function ensureShopInstalled(
       shopDomain,
       name: identity.name,
       currencyCode: identity.currencyCode,
+      ianaTimezone: identity.ianaTimezone,
       shopifyPlan: identity.planName,
       isPlus: identity.isPlus,
       installationStatus: "INSTALLED",
@@ -94,6 +99,7 @@ export async function ensureShopInstalled(
     update: {
       name: identity.name,
       currencyCode: identity.currencyCode,
+      ianaTimezone: identity.ianaTimezone,
       shopifyPlan: identity.planName,
       isPlus: identity.isPlus,
       installationStatus: "INSTALLED",

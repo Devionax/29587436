@@ -43,6 +43,11 @@ export type EngineRule = {
   maxOffers: number | null;
   showOnProductPage: boolean;
   showOnCartPage: boolean;
+  /**
+   * True when the rule sells to any buyer with a non-empty cart and has no
+   * trigger products. Manual offers must not require trigger configuration.
+   */
+  manualAudience?: boolean;
   triggers: EngineTrigger[];
   offers: EngineOffer[];
 };
@@ -130,6 +135,12 @@ export type EngineInput = {
   limit?: number;
   /** Shop-level fallback heading when a rule has none. */
   defaultHeading?: string | null;
+  /**
+   * Whether the buyer's real cart holds anything. Product pages append the
+   * viewed product to `cart` for trigger matching; manual offers must still
+   * stay hidden until the cart itself is non-empty.
+   */
+  hasCartItems?: boolean;
 };
 
 const DEFAULT_LIMIT = 3;
@@ -162,6 +173,15 @@ function ruleMatchesCart(rule: EngineRule, cart: CartLine[]): boolean {
   );
 }
 
+/**
+ * A manual offer is eligible while the cart holds any product. It becomes
+ * ineligible the moment the cart empties and eligible again on the next add,
+ * because every evaluation starts from the current cart.
+ */
+function manualAudienceMatches(rule: EngineRule, hasCartItems: boolean): boolean {
+  return rule.manualAudience === true && rule.triggers.length === 0 && hasCartItems;
+}
+
 function cartHasVariant(cart: CartLine[], variantGid: string): boolean {
   return cart.some((line) => line.variantGid === variantGid && line.quantity > 0);
 }
@@ -170,10 +190,12 @@ export function recommendOffers(input: EngineInput): RecommendationResult {
   const limit = Math.max(1, input.limit ?? DEFAULT_LIMIT);
   const products = new Map(input.products.map((product) => [product.productGid, product]));
   const cart = input.cart.filter((line) => line.quantity > 0);
+  const hasCartItems = input.hasCartItems ?? cart.length > 0;
 
   const offers: Recommendation[] = [];
   const excluded: ExcludedOffer[] = [];
   const claimedVariants = new Set<string>();
+  const claimedProducts = new Set<string>();
   let heading: string | null = null;
 
   const rules = [...input.rules].sort(compareRules);
@@ -187,8 +209,11 @@ export function recommendOffers(input: EngineInput): RecommendationResult {
     let ruleBlocked: ExcludedReason | null = null;
     if (rule.status !== "ACTIVE") ruleBlocked = "RULE_INACTIVE";
     else if (!surfaceEnabled) ruleBlocked = "SURFACE_DISABLED";
-    else if (rule.triggers.length === 0) ruleBlocked = "NO_TRIGGERS";
-    else if (!ruleMatchesCart(rule, cart)) ruleBlocked = "NO_TRIGGER_MATCH";
+    else if (rule.triggers.length === 0) {
+      if (!manualAudienceMatches(rule, hasCartItems)) ruleBlocked = "NO_TRIGGERS";
+    } else if (!ruleMatchesCart(rule, cart)) {
+      ruleBlocked = "NO_TRIGGER_MATCH";
+    }
 
     const ruleCap = Math.min(rule.maxOffers ?? limit, limit);
     let ruleOfferCount = 0;
@@ -210,6 +235,10 @@ export function recommendOffers(input: EngineInput): RecommendationResult {
           reason = "OFFER_UNAVAILABLE";
         } else if (cartHasVariant(cart, offer.variantGid)) {
           reason = "OFFER_ALREADY_IN_CART";
+        } else if (claimedProducts.has(offer.productGid)) {
+          // A product appears at most once in a recommendation set, even when a
+          // second variant of it would otherwise qualify.
+          reason = "DUPLICATE_OFFER";
         } else if (claimedVariants.has(offer.variantGid)) {
           reason = "DUPLICATE_OFFER";
         } else if (ruleOfferCount >= ruleCap || offers.length >= limit) {
@@ -253,6 +282,7 @@ export function recommendOffers(input: EngineInput): RecommendationResult {
       });
 
       claimedVariants.add(offer.variantGid);
+      claimedProducts.add(offer.productGid);
       ruleOfferCount += 1;
       if (!heading) {
         heading =

@@ -53,9 +53,32 @@ export type Entitlement = {
   planName: string;
   status: SubscriptionStatus;
   limits: PlanLimits;
-  source: "shopify" | "cache" | "default";
+  source: "shopify" | "cache" | "default" | "development";
   verifiedAt: Date | null;
 };
+
+/**
+ * Local development/testing switch. When DEV_TESTING_MODE is on, every shop is
+ * granted the top plan's limits so all offer features can be exercised without
+ * a subscription. Billing code, subscription rows and the billing page are
+ * untouched, and turning the flag off restores normal enforcement immediately.
+ */
+export function devTestingMode(): boolean {
+  const value = process.env.DEV_TESTING_MODE;
+  return value === "true" || value === "1";
+}
+
+function testingEntitlement(): Entitlement {
+  const plan = PLANS["PRO"];
+  return {
+    planId: plan.id,
+    planName: plan.name,
+    status: "ACTIVE",
+    limits: plan.limits,
+    source: "development",
+    verifiedAt: null,
+  };
+}
 
 type SubscriptionNode = {
   id?: string | null;
@@ -142,6 +165,8 @@ function firstActive(nodes: SubscriptionNode[]): SubscriptionNode | null {
  * primary-key read and never calls Shopify.
  */
 export async function getEntitlement(shopId: string): Promise<Entitlement> {
+  if (devTestingMode()) return testingEntitlement();
+
   const row = await db.subscription.findUnique({ where: { shopId } });
   if (!row) return freeEntitlement("PENDING", "default", null);
 
@@ -162,6 +187,10 @@ export async function syncEntitlement(
   admin: AdminApiContext,
   options: { force?: boolean } = {},
 ): Promise<Entitlement> {
+  // Testing mode never calls Shopify and never rewrites the cached row, so the
+  // production billing state is exactly as it was once the flag is removed.
+  if (devTestingMode()) return testingEntitlement();
+
   const row = await db.subscription.findUnique({ where: { shopId } });
   const fresh =
     row?.lastVerifiedAt &&
@@ -265,12 +294,16 @@ export async function assertRuleCapacity(shopId: string): Promise<void> {
 
 export async function assertActiveRuleCapacity(
   shopId: string,
-  activatingRuleId: string,
+  activatingRuleId?: string,
 ): Promise<void> {
   const [entitlement, active] = await Promise.all([
     getEntitlement(shopId),
     db.recommendationRule.count({
-      where: { shopId, status: "ACTIVE", id: { not: activatingRuleId } },
+      where: {
+        shopId,
+        status: "ACTIVE",
+        ...(activatingRuleId ? { id: { not: activatingRuleId } } : {}),
+      },
     }),
   ]);
 

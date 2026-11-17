@@ -8,29 +8,330 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// Managed by @shopify/shopify-app-session-storage-prisma.
-// Tokens live only here and are never sent to a browser or extension.
 model Session {
-  id                   String    @id
-  shop                 String
-  state                String
-  isOnline             Boolean   @default(false)
-  scope                String?
-  expires              DateTime?
-  accessToken          String
-  userId               BigInt?
-  firstName            String?
-  lastName             String?
-  email                String?
-  accountOwner         Boolean   @default(false)
-  locale               String?
-  collaborator         Boolean?  @default(false)
-  emailVerified        Boolean?  @default(false)
-  refreshToken         String?
-  refreshTokenExpires  DateTime?
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
 
   @@index([shop])
   @@index([expires])
+}
+
+model Shop {
+  id                 String                @id @default(cuid())
+  shopDomain         String                @unique
+  name               String?
+  currencyCode       String?
+  installationStatus InstallationStatus    @default(PENDING)
+  shopifyPlan        String?
+  isPlus             Boolean               @default(false)
+  installedAt        DateTime?
+  uninstalledAt      DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  ianaTimezone       String?
+  analyticsEvents    AnalyticsEvent[]
+  cartActivities     CartActivity[]
+  cartWatches        CartWatch[]
+  conditions         OfferCondition[]
+  conditionGroups    OfferConditionGroup[]
+  offerExperiences   OfferExperience[]
+  orderAttributions  OrderAttribution[]
+  productSnapshots   ProductSnapshot[]
+  rules              RecommendationRule[]
+  settings           ShopSettings?
+  subscription       Subscription?
+  webhookReceipts    WebhookReceipt[]
+
+  @@index([installationStatus])
+}
+
+model ShopSettings {
+  id                 String   @id @default(cuid())
+  shopId             String   @unique
+  enabled            Boolean  @default(false)
+  defaultHeading     String   @default("You may also like")
+  maxOffers          Int      @default(3)
+  productPageEnabled Boolean  @default(true)
+  cartPageEnabled    Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  shop               Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+}
+
+model RecommendationRule {
+  id                String                @id @default(cuid())
+  shopId            String
+  name              String
+  description       String?
+  status            RuleStatus            @default(DRAFT)
+  priority          Int                   @default(100)
+  matchMode         MatchMode             @default(ANY)
+  heading           String?
+  maxOffers         Int?
+  showOnProductPage Boolean               @default(true)
+  showOnCartPage    Boolean               @default(true)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  autoLookbackHours Int                   @default(168)
+  autoMaxOffers     Int?
+  autoMinRepeats    Int                   @default(2)
+  endsAt            DateTime?
+  prioritizeRepeats Boolean               @default(true)
+  showOnCheckout    Boolean               @default(false)
+  sources           OfferSource[]         @default([MANUAL])
+  startsAt          DateTime?
+  analyticsEvents   AnalyticsEvent[]
+  conditionGroups   OfferConditionGroup[]
+  experiences       OfferExperience[]
+  orderAttributions OrderAttribution[]
+  shop              Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  offers            RecommendedProduct[]
+  triggers          TriggerProduct[]
+
+  @@index([shopId, status, priority])
+  @@index([shopId, updatedAt])
+}
+
+model TriggerProduct {
+  id         String             @id @default(cuid())
+  shopId     String
+  ruleId     String
+  productGid String
+  variantGid String             @default("")
+  createdAt  DateTime           @default(now())
+  rule       RecommendationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, productGid, variantGid])
+  @@index([shopId, productGid])
+}
+
+model RecommendedProduct {
+  id              String             @id @default(cuid())
+  shopId          String
+  ruleId          String
+  productGid      String
+  variantGid      String
+  defaultQuantity Int                @default(1)
+  minQuantity     Int                @default(1)
+  maxQuantity     Int                @default(10)
+  position        Int                @default(0)
+  active          Boolean            @default(true)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  rule            RecommendationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, variantGid])
+  @@index([shopId, ruleId])
+}
+
+model OfferExperience {
+  id         String             @id @default(cuid())
+  shopId     String
+  ruleId     String
+  experience Experience
+  enabled    Boolean            @default(true)
+  headline   String?
+  body       String?
+  ctaLabel   String?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  rule       RecommendationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  shop       Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, experience])
+  @@index([shopId, experience, enabled])
+}
+
+model OfferConditionGroup {
+  id            String                @id @default(cuid())
+  shopId        String
+  ruleId        String
+  parentGroupId String?
+  joinOp        ConditionJoinOp       @default(AND)
+  position      Int                   @default(0)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  conditions    OfferCondition[]
+  parent        OfferConditionGroup?  @relation("ConditionGroupTree", fields: [parentGroupId], references: [id], onDelete: Cascade)
+  children      OfferConditionGroup[] @relation("ConditionGroupTree")
+  rule          RecommendationRule    @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  shop          Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId, parentGroupId, position])
+  @@index([shopId])
+}
+
+model OfferCondition {
+  id        String              @id @default(cuid())
+  shopId    String
+  groupId   String
+  field     ConditionField
+  operator  ConditionOperator
+  valueJson Json
+  position  Int                 @default(0)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  group     OfferConditionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  shop      Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, position])
+  @@index([shopId])
+}
+
+model ProductSnapshot {
+  id               String                   @id @default(cuid())
+  shopId           String
+  productGid       String
+  title            String
+  handle           String
+  imageUrl         String?
+  status           String
+  availableForSale Boolean                  @default(false)
+  priceMin         Decimal?                 @db.Decimal(12, 2)
+  priceMax         Decimal?                 @db.Decimal(12, 2)
+  currencyCode     String?
+  syncedAt         DateTime
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  shop             Shop                     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  variants         ProductVariantSnapshot[]
+
+  @@unique([shopId, productGid])
+  @@index([shopId, syncedAt])
+}
+
+model ProductVariantSnapshot {
+  id               String          @id @default(cuid())
+  shopId           String
+  productId        String
+  variantGid       String
+  title            String
+  price            Decimal         @db.Decimal(12, 2)
+  compareAtPrice   Decimal?        @db.Decimal(12, 2)
+  availableForSale Boolean         @default(false)
+  position         Int             @default(0)
+  syncedAt         DateTime
+  product          ProductSnapshot @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, variantGid])
+  @@index([productId])
+}
+
+model CartActivity {
+  id           String           @id @default(cuid())
+  shopId       String
+  sessionKey   String
+  productGid   String
+  variantGid   String
+  activityType CartActivityType
+  occurredAt   DateTime
+  createdAt    DateTime         @default(now())
+  shop         Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, sessionKey, occurredAt])
+  @@index([shopId, productGid, occurredAt])
+  @@index([shopId, activityType, occurredAt])
+}
+
+model CartWatch {
+  cartToken  String   @id
+  shopId     String
+  sessionKey String?
+  lines      Json
+  updatedAt  DateTime @updatedAt
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, updatedAt])
+}
+
+model AnalyticsEvent {
+  id              String              @id @default(cuid())
+  shopId          String
+  ruleId          String?
+  eventType       AnalyticsEventType
+  surface         Surface
+  offerProductGid String
+  offerVariantGid String?
+  sessionKey      String
+  dedupeKey       String              @unique
+  occurredAt      DateTime
+  receivedAt      DateTime            @default(now())
+  metadata        Json?
+  experience      Experience?
+  declineReason   DeclineReason?
+  rule            RecommendationRule? @relation(fields: [ruleId], references: [id])
+  shop            Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, occurredAt])
+  @@index([shopId, experience, occurredAt])
+  @@index([shopId, ruleId, eventType])
+  @@index([shopId, offerProductGid])
+}
+
+model OrderAttribution {
+  id              String              @id @default(cuid())
+  shopId          String
+  orderGid        String
+  ruleId          String?
+  offerProductGid String
+  offerVariantGid String
+  quantity        Int
+  lineSubtotal    Decimal             @db.Decimal(12, 2)
+  currencyCode    String
+  attributedAt    DateTime            @default(now())
+  experience      Experience?
+  rule            RecommendationRule? @relation(fields: [ruleId], references: [id])
+  shop            Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([orderGid, offerVariantGid])
+  @@index([shopId, attributedAt])
+  @@index([orderGid])
+}
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  shopId                 String             @unique
+  planName               String
+  status                 SubscriptionStatus @default(PENDING)
+  shopifySubscriptionGid String?
+  currentPeriodEnd       DateTime?
+  lastVerifiedAt         DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  shop                   Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+}
+
+model WebhookReceipt {
+  id          String        @id @default(cuid())
+  webhookId   String        @unique
+  shopDomain  String
+  shopId      String?
+  topic       String
+  apiVersion  String?
+  status      WebhookStatus @default(RECEIVED)
+  attempts    Int           @default(0)
+  lastError   String?
+  receivedAt  DateTime      @default(now())
+  processedAt DateTime?
+  shop        Shop?         @relation(fields: [shopId], references: [id])
+
+  @@index([shopDomain, topic])
+  @@index([status])
 }
 
 enum InstallationStatus {
@@ -51,6 +352,52 @@ enum MatchMode {
   ALL
 }
 
+enum Experience {
+  PRE_PURCHASE
+  POST_PURCHASE
+}
+
+enum ConditionJoinOp {
+  AND
+  OR
+}
+
+enum ConditionField {
+  CART_SUBTOTAL
+  CART_LINE_COUNT
+  CART_TOTAL_QUANTITY
+  CART_CONTAINS_PRODUCT
+  CART_QUANTITY_OF_PRODUCT
+  CUSTOMER_LOGGED_IN
+  SHIPPING_COUNTRY
+  MARKET_COUNTRY
+  ORDER_TOTAL
+  ORDER_LINE_COUNT
+  TIME_WINDOW
+}
+
+enum ConditionOperator {
+  EQ
+  NEQ
+  GT
+  GTE
+  LT
+  LTE
+  IN
+  NOT_IN
+}
+
+enum OfferSource {
+  MANUAL
+  RECENTLY_REMOVED
+  REPEATED_ACTIVITY
+}
+
+enum CartActivityType {
+  ADDED
+  REMOVED
+}
+
 enum Surface {
   PRODUCT_PAGE
   CART_PAGE
@@ -64,6 +411,16 @@ enum AnalyticsEventType {
   ADD_SUCCESS
   ADD_FAILURE
   ORDER_ATTRIBUTED
+  OFFER_ACCEPTED
+  OFFER_DECLINED
+}
+
+enum DeclineReason {
+  OUT_OF_STOCK
+  VARIANT_UNAVAILABLE
+  CART_LIMIT
+  NETWORK
+  UNKNOWN
 }
 
 enum SubscriptionStatus {
@@ -77,228 +434,4 @@ enum WebhookStatus {
   RECEIVED
   PROCESSED
   FAILED
-}
-
-// Tenant root. Every shop-owned table is reachable from this row, and every
-// query is scoped by its id.
-model Shop {
-  id                 String             @id @default(cuid())
-  shopDomain         String             @unique
-  name               String?
-  currencyCode       String?
-  installationStatus InstallationStatus @default(PENDING)
-  shopifyPlan        String?
-  isPlus             Boolean            @default(false)
-  installedAt        DateTime?
-  uninstalledAt      DateTime?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
-
-  settings          ShopSettings?
-  rules             RecommendationRule[]
-  productSnapshots  ProductSnapshot[]
-  analyticsEvents   AnalyticsEvent[]
-  orderAttributions OrderAttribution[]
-  subscription      Subscription?
-  webhookReceipts   WebhookReceipt[]
-
-  @@index([installationStatus])
-}
-
-model ShopSettings {
-  id                 String   @id @default(cuid())
-  shopId             String   @unique
-  enabled            Boolean  @default(false)
-  defaultHeading     String   @default("You may also like")
-  maxOffers          Int      @default(3)
-  productPageEnabled Boolean  @default(true)
-  cartPageEnabled    Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-
-  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
-}
-
-model RecommendationRule {
-  id                String     @id @default(cuid())
-  shopId            String
-  name              String
-  description       String?
-  status            RuleStatus @default(DRAFT)
-  // Lower number wins. Ties resolve by offer position, then rule id.
-  priority          Int        @default(100)
-  matchMode         MatchMode  @default(ANY)
-  heading           String?
-  maxOffers         Int?
-  showOnProductPage Boolean    @default(true)
-  showOnCartPage    Boolean    @default(true)
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
-
-  shop              Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  triggers          TriggerProduct[]
-  offers            RecommendedProduct[]
-  analyticsEvents   AnalyticsEvent[]
-  orderAttributions OrderAttribution[]
-
-  @@index([shopId, status, priority])
-  @@index([shopId, updatedAt])
-}
-
-model TriggerProduct {
-  id         String   @id @default(cuid())
-  shopId     String
-  ruleId     String
-  productGid String
-  // Empty string means "any variant of this product".
-  variantGid String   @default("")
-  createdAt  DateTime @default(now())
-
-  rule RecommendationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
-
-  @@unique([ruleId, productGid, variantGid])
-  @@index([shopId, productGid])
-}
-
-model RecommendedProduct {
-  id              String   @id @default(cuid())
-  shopId          String
-  ruleId          String
-  productGid      String
-  variantGid      String
-  defaultQuantity Int      @default(1)
-  minQuantity     Int      @default(1)
-  maxQuantity     Int      @default(10)
-  position        Int      @default(0)
-  active          Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  rule RecommendationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
-
-  @@unique([ruleId, variantGid])
-  @@index([shopId, ruleId])
-}
-
-// Local projection of Shopify catalog data used by the storefront endpoint.
-// Shopify remains the source of truth; this is refreshed by webhooks and syncs.
-model ProductSnapshot {
-  id               String   @id @default(cuid())
-  shopId           String
-  productGid       String
-  title            String
-  handle           String
-  imageUrl         String?
-  status           String
-  availableForSale Boolean  @default(false)
-  priceMin         Decimal? @db.Decimal(12, 2)
-  priceMax         Decimal? @db.Decimal(12, 2)
-  currencyCode     String?
-  syncedAt         DateTime
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  shop     Shop                     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  variants ProductVariantSnapshot[]
-
-  @@unique([shopId, productGid])
-  @@index([shopId, syncedAt])
-}
-
-model ProductVariantSnapshot {
-  id              String   @id @default(cuid())
-  shopId          String
-  productId       String
-  variantGid      String
-  title           String
-  price           Decimal  @db.Decimal(12, 2)
-  compareAtPrice  Decimal? @db.Decimal(12, 2)
-  availableForSale Boolean @default(false)
-  position        Int      @default(0)
-  syncedAt        DateTime
-
-  product ProductSnapshot @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  @@unique([shopId, variantGid])
-  @@index([productId])
-}
-
-model AnalyticsEvent {
-  id              String             @id @default(cuid())
-  shopId          String
-  ruleId          String?
-  eventType       AnalyticsEventType
-  surface         Surface
-  offerProductGid String
-  offerVariantGid String?
-  // Pseudonymous, generated per storefront session. Never a customer identifier.
-  sessionKey      String
-  dedupeKey       String             @unique
-  occurredAt      DateTime
-  receivedAt      DateTime           @default(now())
-  metadata        Json?
-
-  shop Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  rule RecommendationRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
-
-  @@index([shopId, occurredAt])
-  @@index([shopId, ruleId, eventType])
-  @@index([shopId, offerProductGid])
-}
-
-// Attribution derived from the cart marker set when an offer is accepted.
-// This is an association, not proof of incrementality. One order can credit
-// several offers, hence the composite uniqueness below.
-model OrderAttribution {
-  id              String   @id @default(cuid())
-  shopId          String
-  orderGid        String
-  ruleId          String?
-  offerProductGid String
-  offerVariantGid String
-  quantity        Int
-  lineSubtotal    Decimal  @db.Decimal(12, 2)
-  currencyCode    String
-  attributedAt    DateTime @default(now())
-
-  shop Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  rule RecommendationRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
-
-  @@unique([orderGid, offerVariantGid])
-  @@index([shopId, attributedAt])
-  @@index([orderGid])
-}
-
-// Local reconciliation cache. Shopify App Pricing remains the billing truth.
-model Subscription {
-  id                     String             @id @default(cuid())
-  shopId                 String             @unique
-  planName               String
-  status                 SubscriptionStatus @default(PENDING)
-  shopifySubscriptionGid String?
-  currentPeriodEnd       DateTime?
-  lastVerifiedAt         DateTime?
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
-
-  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
-}
-
-model WebhookReceipt {
-  id         String        @id @default(cuid())
-  webhookId  String        @unique
-  shopDomain String
-  shopId     String?
-  topic      String
-  apiVersion String?
-  status     WebhookStatus @default(RECEIVED)
-  attempts   Int           @default(0)
-  lastError  String?
-  receivedAt DateTime      @default(now())
-  processedAt DateTime?
-
-  shop Shop? @relation(fields: [shopId], references: [id], onDelete: SetNull)
-
-  @@index([shopDomain, topic])
-  @@index([status])
 }

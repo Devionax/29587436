@@ -1,0 +1,16 @@
+# Shopify CLI adds `uid` on the first interactive registration/deploy; the file
+# is kept uid-less so it can be linked from a fresh checkout without conflict.
+api_version = "2026-10"
+
+[[extensions]]
+name = "Upsellora checkout upsell"
+handle = "pre-purchase-upsell"
+uid = "1a32e119-bf9a-e94b-3ee2-2edb83bd312e63cc228d"
+type = "ui_extension"
+
+[[extensions.targeting]]
+target = "purchase.checkout.block.render"
+module = "./src/Checkout.jsx"
+
+[extensions.capabilities]
+network_access = true

@@ -3,7 +3,11 @@ import { InvalidInputError } from "../utils/errors";
 
 /**
  * Shop-level settings. Every function is scoped by the authenticated shopId;
- * only these four writable fields are ever copied from input.
+ * only the writable fields below are ever copied from input.
+ *
+ * `enabled` gates checkout experiences only. Storefront delivery is controlled
+ * per placement by productPageEnabled and cartPageEnabled, both on by default
+ * so a merchant installing the theme blocks sees offers immediately.
  */
 
 export type SettingsInput = {
@@ -45,9 +49,6 @@ export function validateSettings(input: SettingsInput): SettingsInput {
   }
   if (!Number.isInteger(input.maxOffers) || input.maxOffers < 1 || input.maxOffers > 10) {
     throw new InvalidInputError("Maximum offers must be a whole number from 1 to 10.");
-  }
-  if (!input.productPageEnabled && !input.cartPageEnabled) {
-    throw new InvalidInputError("Enable at least one storefront placement.");
   }
 
   return {

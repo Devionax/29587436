@@ -5,14 +5,14 @@ import type { CatalogProduct } from "../../app/services/catalog.server";
 import { getStorefrontRecommendations } from "../../app/services/recommendations.server";
 import { createRule, setRuleStatus } from "../../app/services/rules.server";
 import { DEFAULT_SETTINGS, updateSettings } from "../../app/services/settings.server";
-import { InvalidInputError } from "../../app/utils/errors";
 import { parseCartLines, parseSurface } from "../../app/utils/storefront-input";
 import { createShop, prisma } from "../helpers/db";
 
 const TRIGGER = "gid://shopify/Product/501";
 const OFFER = "gid://shopify/Product/502";
 const OFFER_VARIANT = "gid://shopify/ProductVariant/50201";
-const EXTRA_VARIANT = "gid://shopify/ProductVariant/50202";
+const OFFER_B = "gid://shopify/Product/503";
+const OFFER_B_VARIANT = "gid://shopify/ProductVariant/50301";
 
 function snapshot(): CatalogProduct {
   return {
@@ -34,13 +34,29 @@ function snapshot(): CatalogProduct {
         availableForSale: true,
         position: 0,
       },
+    ],
+  };
+}
+
+function secondSnapshot(): CatalogProduct {
+  return {
+    productGid: OFFER_B,
+    title: "Travel shoe horn",
+    handle: "travel-shoe-horn",
+    status: "ACTIVE",
+    imageUrl: null,
+    availableForSale: true,
+    priceMin: "9.00",
+    priceMax: "9.00",
+    currencyCode: "USD",
+    variants: [
       {
-        variantGid: EXTRA_VARIANT,
-        title: "Deluxe",
-        price: "29.00",
+        variantGid: OFFER_B_VARIANT,
+        title: "Default",
+        price: "9.00",
         compareAtPrice: null,
         availableForSale: true,
-        position: 1,
+        position: 0,
       },
     ],
   };
@@ -59,6 +75,7 @@ describe("storefront recommendations", () => {
     shopB = await createShop("rec-b");
 
     await upsertProductSnapshot(shopA.id, snapshot());
+    await upsertProductSnapshot(shopA.id, secondSnapshot());
 
     await createRule(shopA.id, {
       name: "Shoe care",
@@ -78,8 +95,8 @@ describe("storefront recommendations", () => {
           maxQuantity: 5,
         },
         {
-          productGid: OFFER,
-          variantGid: EXTRA_VARIANT,
+          productGid: OFFER_B,
+          variantGid: OFFER_B_VARIANT,
           defaultQuantity: 1,
           minQuantity: 1,
           maxQuantity: 5,
@@ -94,18 +111,11 @@ describe("storefront recommendations", () => {
     await db.$disconnect();
   });
 
-  it("returns nothing until the merchant enables recommendations", async () => {
-    const result = await getStorefrontRecommendations(shopA.id, {
-      surface: "PRODUCT_PAGE",
-      cart: cartLine(),
+  it("delivers offers by default without the checkout switch", async () => {
+    const settings = await prisma.shopSettings.findUniqueOrThrow({
+      where: { shopId: shopA.id },
     });
-
-    expect(result.enabled).toBe(false);
-    expect(result.offers).toHaveLength(0);
-  });
-
-  it("returns snapshot-backed offers once enabled", async () => {
-    await updateSettings(shopA.id, { ...DEFAULT_SETTINGS, enabled: true });
+    expect(settings.enabled).toBe(false);
 
     const result = await getStorefrontRecommendations(shopA.id, {
       surface: "PRODUCT_PAGE",
@@ -115,6 +125,14 @@ describe("storefront recommendations", () => {
     expect(result.enabled).toBe(true);
     expect(result.heading).toBe("Complete your pair");
     expect(result.offers).toHaveLength(2);
+  });
+
+  it("returns snapshot-backed offer data", async () => {
+    const result = await getStorefrontRecommendations(shopA.id, {
+      surface: "PRODUCT_PAGE",
+      cart: cartLine(),
+    });
+
     expect(result.offers[0]).toMatchObject({
       variantGid: OFFER_VARIANT,
       productTitle: "Shoe care kit",
@@ -174,15 +192,27 @@ describe("storefront recommendations", () => {
     await setRuleStatus(shopA.id, rule.id, "ACTIVE");
   });
 
-  it("rejects settings that would disable every placement", async () => {
-    await expect(
-      updateSettings(shopA.id, {
-        ...DEFAULT_SETTINGS,
-        enabled: true,
-        productPageEnabled: false,
-        cartPageEnabled: false,
-      }),
-    ).rejects.toBeInstanceOf(InvalidInputError);
+  it("turns each storefront placement off independently", async () => {
+    await updateSettings(shopA.id, {
+      ...DEFAULT_SETTINGS,
+      enabled: true,
+      productPageEnabled: false,
+    });
+
+    const product = await getStorefrontRecommendations(shopA.id, {
+      surface: "PRODUCT_PAGE",
+      cart: cartLine(),
+    });
+    expect(product.enabled).toBe(false);
+    expect(product.offers).toHaveLength(0);
+
+    const cart = await getStorefrontRecommendations(shopA.id, {
+      surface: "CART_PAGE",
+      cart: cartLine(),
+    });
+    expect(cart.enabled).toBe(true);
+
+    await updateSettings(shopA.id, { ...DEFAULT_SETTINGS, enabled: true });
   });
 });
 

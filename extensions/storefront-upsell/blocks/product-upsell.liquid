@@ -14,6 +14,7 @@
   data-surface="product"
   data-product-gid="gid://shopify/Product/{{ product.id }}"
   data-product-variant-gid="{{ product.selected_or_first_available_variant.id | prepend: 'gid://shopify/ProductVariant/' }}"
+  data-customer-logged-in="{% if customer %}true{% else %}false{% endif %}"
   {%- if block.settings.heading != blank %}
     data-heading="{{ block.settings.heading | escape }}"
   {%- endif %}

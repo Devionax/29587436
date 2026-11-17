@@ -9,6 +9,8 @@
 | 2026-11-15 | Public App Store distribution | Single multi-tenant backend; mandatory compliance webhooks required before launch. |
 | 2026-11-15 | TypeScript kept from the official template | The React Router template is TS-only. Converting to JS would fight generated code; Blueprint §5 permits a deliberate consistent choice. |
 | 2026-11-15 | Shopify Starter unsupported | Starter has no theme/storefront and is closed to new subscriptions. |
+| 2026-11-16 | Upsellora supports all Shopify subscription plans | Main business requirement. Product- and cart-page offers ship as a theme app extension on every plan; only the checkout carousel stays Plus-only because Shopify restricts pre-purchase checkout extensions to Plus. |
+| 2026-11-16 | Offers are modeled as sources on `RecommendationRule` | Approved evolution of the existing rule model: one offers system, engine and admin experience on every plan, with manual and automatic sources. |
 
 ## Phase 1 — App foundation (complete)
 
@@ -615,3 +617,358 @@ After Phase 12, the remaining work is operational: create the managed pricing
 plans, request protected customer data access, run manual QA in a development
 store, and prepare the App Store listing. The app is not "done" until those
 complete.
+
+## All-plan pivot — A1: schema, migration, services, tests (complete)
+
+**Goal:** prepare the data model and rule services for Upsellora's all-plan model
+without changing any existing merchant-visible behavior, and prove that the
+migration preserves existing data.
+
+### Decisions
+
+- Product- and cart-page offers stay on the theme app extension, which Shopify
+  allows on every plan. Checkout stays a separate Plus-only placement; the app
+  never implies checkout support on Basic, Shopify or Advanced.
+- Recommendation sources become an ordered list on `RecommendationRule`
+  (`MANUAL`, `RECENTLY_REMOVED`, `REPEATED_ACTIVITY`). Order is merchant priority;
+  legacy rules default to `["MANUAL"]`, so their output is unchanged.
+- Automatic sources need pseudonymous cart history. `CartActivity` stores only a
+  storefront-generated `sessionKey`, product/variant GIDs, event type and time;
+  `CartWatch` stores the last known cart lines per cart token so `carts/update`
+  can be diffed (Shopify does not send the previous state).
+- Checkout placement defaults to off for every rule, including existing rows.
+- Schedule fields are optional; an end date must be after the start date.
+- `assertActiveRuleCapacity` accepts the rule being activated so re-saving an
+  already-active rule does not count itself against the plan limit.
+
+### Schema additions (`prisma/schema.prisma`)
+
+- Enums: `OfferSource`, `CartActivityType`.
+- `RecommendationRule`: `sources OfferSource[] @default([MANUAL])`,
+  `showOnCheckout Boolean @default(false)`, `autoLookbackHours Int @default(168)`,
+  `autoMaxOffers Int?`, `autoMinRepeats Int @default(2)`,
+  `prioritizeRepeats Boolean @default(true)`, `startsAt DateTime?`,
+  `endsAt DateTime?`.
+- `CartActivity` (shop-scoped, three composite indexes) and `CartWatch` (one row
+  per cart token, shop-scoped, cascade on shop delete).
+- `Shop` relations for both new models.
+
+### Migration
+
+`prisma/migrations/20261116120000_offers_sources_checkout/migration.sql` is
+purely additive: two enums, eight nullable/defaulted columns, two tables, their
+indexes and two cascading foreign keys. No column is dropped, renamed or retyped.
+
+**This migration has not been applied to the developer's `DATABASE_URL`.** It was
+applied only to disposable embedded PostgreSQL instances for verification. Run
+`npm run db:migrate` locally after reviewing the SQL.
+
+### Preservation evidence
+
+Replayed the three shipped migrations into a disposable database, inserted a
+legacy shop, settings, active rule, trigger, offer, analytics event, product
+snapshot and subscription, then applied the new migration:
+
+- Shop, ShopSettings, Subscription and all legacy `RecommendationRule` columns
+  were byte-identical before and after.
+- Trigger, offer, event and snapshot counts were unchanged.
+- The legacy rule received `sources = ["MANUAL"]`, `showOnCheckout = false`,
+  `autoLookbackHours = 168`, `autoMaxOffers = null`, `autoMinRepeats = 2`,
+  `prioritizeRepeats = true`, `startsAt = null`, `endsAt = null`.
+- `CartActivity` and `CartWatch` were created and empty.
+
+A separate fresh database ran all four migrations with `prisma migrate deploy`
+(`Database schema is up to date!`), accepted inserts into the new tables, and
+`prisma migrate diff --from-migrations … --to-schema-datamodel …` produced an
+empty migration (no drift).
+
+### Services
+
+- `app/services/placements.server.ts`: `getPlacementSupport(shop)` returns
+  product page and cart page as available on every plan via the theme app
+  extension, and checkout as available only when `shop.isPlus` (decided from the
+  flag, not the plan name).
+- `app/services/rules.server.ts`: accepts the new fields, validates non-empty
+  unique sources and the schedule window, copies them on duplicate, and enforces
+  active-rule capacity on create and update. Omitted fields stay unchanged so an
+  older caller cannot accidentally reset sources.
+- `app/services/entitlement.server.ts`: active-rule capacity can exclude the rule
+  being re-saved.
+
+### Tests added
+
+- `tests/unit/placements.test.ts` (4): all-plan product/cart, Plus-only checkout,
+  checkout keyed to `isPlus` rather than plan name.
+- `tests/integration/offer-sources.test.ts` (10): defaults, ordered sources,
+  automatic settings and schedule, update reorder/clear, omitted fields preserved,
+  duplicate copy, empty/duplicate sources, invalid window, active capacity on
+  update, tenant isolation.
+- `tests/integration/cart-activity.test.ts` (4): event ordering, per-session and
+  per-tenant separation, cart-watch upsert, cascade delete.
+
+### Verification run
+
+| Check | Result |
+| --- | --- |
+| `npm test` | pass (155 tests across 17 files) |
+| `npm run typecheck` | pass |
+| `npm run lint` | pass |
+| `npm run build` | pass |
+| Fresh DB `prisma migrate deploy` | pass (4 migrations) |
+| `prisma migrate diff` migrations → schema | empty migration (no drift) |
+| Legacy-data preservation check | pass |
+
+### Next: A2 — Offers admin UI
+
+Rename the Rules navigation to Offers, expose sources, schedule, automatic
+settings and the plan-aware placement panel (with checkout disabled and explained
+for non-Plus shops), and keep every control wired to real behavior.
+
+The earlier "Phase 12 — Shopify Plus checkout-step extension" section is
+superseded by this all-plan plan; checkout remains Plus-only and arrives in a
+later phase.
+
+---
+
+## Admin transformation: Dashboard / Offers / Analytics / Settings
+
+Status: implemented and verified locally. Not yet exercised against a real
+development store or theme, which remains the launch gate.
+
+### Navigation and routes
+
+- App Bridge nav is now Dashboard (`/app`), Offers (`/app/offers`), Analytics
+  (`/app/analytics`), Settings (`/app/settings`).
+- New routes: `app.offers._index.tsx`, `app.offers.new.tsx`,
+  `app.offers.$offerId.tsx`.
+- Legacy `/app/rules`, `/app/rules/*` and `/app/catalog` redirect to the offer
+  workflow so old bookmarks do not 404. The old rule editor component and rule
+  pages were removed; their records are the same `RecommendationRule` rows.
+
+### Pages
+
+- **Dashboard**: plan-window metrics (impressions, add clicks, confirmed adds,
+  attributed revenue), rates, disabled/no-active-offer banners, active offers
+  table with per-offer performance, storefront checklist and plan usage asides,
+  and a first-run empty state. No mock numbers: every value comes from
+  `AnalyticsEvent`, `OrderAttribution`, rules and settings.
+- **Offers**: searchable, status-filtered table with status, source priority,
+  placements, impressions, adds, attributed revenue, and activate/pause,
+  duplicate and inline delete confirmation. Plan-limit and action errors are
+  surfaced in banners; upgrades link to billing. Empty state links to the
+  workflow.
+- **Analytics**: metric tiles for the plan window, click-through/add rates,
+  failed adds, per-offer performance table, most-accepted products, and explicit
+  empty states plus a note that attributed revenue depends on the orders webhook
+  and protected-customer-data approval.
+- **Settings**: store details, global storefront switch, default heading,
+  storefront display cap (bounded by the plan), placement switches, checkout
+  availability explanation, theme setup steps, plan usage. Saving is validated
+  server-side; enabling neither placement is rejected.
+- **Billing**: wording updated from rules to offers and per-offer product counts.
+
+### Offer workflow
+
+Seven steps in one form: Basics → Sources → Products → Automatic rules →
+Placement → Schedule & eligibility → Review. Steps remain mounted so values
+submit together; client validation jumps to the first failing step and the
+server re-validates everything.
+
+- Sources can be combined (Manual, Recently removed, Repeated activity) and
+  reordered; order is the source priority the engine uses.
+- Manual products come from live Shopify catalog search; each product can appear
+  once, and the plan product cap is enforced in the UI, parser and service.
+- Automatic settings: lookback hours, minimum repeats, optional automatic
+  product cap, prioritize repeats. The UI states that automatic sources depend on
+  Shopify cart webhooks and do not cover custom storefront carts.
+- Scheduling stores UTC day boundaries (`startsAt` inclusive, `endsAt` inclusive
+  through 23:59:59.999 UTC) and the engine filters on both.
+- Checkout is never presented as an option. The placement step shows an
+  informational banner: Plus-only and not implemented in this release.
+
+### Storefront data path
+
+- `carts/create` and `carts/update` webhooks diff the last seen cart lines per
+  pseudonymous token into `CartActivity`, with cross-tenant token protection.
+- `getStorefrontRecommendations` merges manual and automatic candidates in source
+  priority order, excludes variants already in the cart, caps automatic
+  candidates, and emits synthetic `auto:<ruleId>:<product>:<variant>` ids so
+  analytics and attribution can validate rule ownership.
+- Product-level duplicates are excluded by the engine and rejected by rule
+  validation and the product picker.
+
+### Tests and verification
+
+| Check | Result |
+| --- | --- |
+| `npm test` | pass — 174 tests, 18 files |
+| `npm run typecheck` | pass |
+| `npm run lint` | pass |
+| `npm run build` | pass |
+
+New coverage added in this stage: automatic source merging/priority/dedupe and
+lookback/schedule behavior (`tests/integration/auto-sources.test.ts`), real cart
+webhook parsing and diffing (`tests/integration/cart-activity.test.ts`), synthetic
+offer ingestion and attribution, per-offer performance aggregation
+(`tests/integration/analytics.test.ts`), offer-form sources/auto/schedule/checkout
+rules (`tests/unit/rule-form.test.ts`) and placement `implemented` flags
+(`tests/unit/placements.test.ts`).
+
+### Known limits / not done
+
+- No UI verification in a browser against Shopify admin or a live theme: this
+  environment has no merchant credentials. Layout uses only Polaris web
+  components and passes type/build checks, but theme blocks, cart webhooks and
+  plan changes still need real-store QA.
+- Pre-purchase checkout carousel remains unimplemented and Plus-only; it is
+  reported as unavailable rather than shown as a dead control.
+- Automatic sources require Shopify cart webhooks; headless/custom carts that do
+  not send them will not produce automatic candidates.
+- Starter compatibility is not advertised until the theme extension is verified
+  there.
+- The additive migration `20261116120000_offers_sources_checkout` still has to be
+  applied to the developer's `DATABASE_URL` with `npm run db:migrate`.
+
+## Stage 3-4 — Checkout-only delivery (2026-11-17)
+
+**Superseding decision:** upsell UI is delivered inside checkout only, per
+`docs/MASTER-APP-BLUEPRINT.md` Revision 4. Product-page and cart-page offers are
+not rendered; the theme app extension stays registered but frozen.
+
+### Pre-purchase (Shopify Plus)
+
+- `extensions/pre-purchase-upsell` — `purchase.checkout.block.render` Preact block
+  with network access. Renders nothing while `src/app-origin.js` is empty.
+- `/api/checkout/offers` — verifies the Shopify session token, resolves the shop
+  from `dest`, rate limits, parses cart/subtotal/country hints, and evaluates
+  shared rules; prices and availability come from `ProductSnapshot`.
+- `/api/checkout/events` — forces `CHECKOUT` / `PRE_PURCHASE` before writing.
+- Add-to-cart uses `applyCartLinesChange`; failures map to decline reasons.
+
+### Post-purchase (access-gated)
+
+- `extensions/post-purchase-upsell` — legacy `extend`/`render` post-purchase
+  extension. `ShouldRender` asks the backend for offers and renders only when
+  offers exist; accepting signs a changeset and calls `applyChangeset`; `done()`
+  moves the buyer on. Any failure renders nothing or shows a message and never
+  blocks the thank-you page.
+- `/api/post-purchase/offers` — verifies the Shopify-issued purchase token
+  (HS256, `iss: shopify`, payload under `input_data`), resolves the shop from the
+  signed payload, builds the order context from `initialPurchase`, and applies
+  the same rule/condition/copy engine as pre-purchase.
+- `/api/post-purchase/changeset` — re-evaluates the requested offer against that
+  purchase, then signs
+  `{ iss: api_key, jti, iat, sub: referenceId, changes: [{type:"add_variant", variantID, quantity}] }`.
+  Quantity and variant come from server-side offer data.
+- `/api/post-purchase/events` — forces `CHECKOUT` / `POST_PURCHASE`.
+- Analytics: `OFFER_ACCEPTED` counts as a conversion and is reported separately
+  from cart adds; `OFFER_DECLINED` is reported as declined offers.
+
+### Verification
+
+- Request handlers live in `app/services/checkout-api.server.ts` and
+  `app/services/post-purchase-api.server.ts`, so the route modules export only
+  `action`. React Router strips route exports from the client build but not other
+  named exports; keeping handlers in services keeps `shopify.server` server-only
+  and the production build clean.
+- `npm test` covers both experiences: token verification/tampering, context
+  building, route auth/CORS/preflight, tenant isolation, deployment-flag gating,
+  changeset claim signing, and analytics surface forcing. 28 files / 319 tests
+  pass.
+- `npm run typecheck`, `npm run lint` and `npm run build` pass.
+- `shopify app build` bundles both extensions successfully.
+- Not verifiable here: a Plus checkout, a Shopify post-purchase grant, protected
+  customer data for shipping country, and order attribution. Those remain
+  external approvals plus live QA.
+
+## Stage 5 — Storefront delivery restored (2026-11-18)
+
+**Superseding decision:** the product must show offers on the product and cart
+pages, so the checkout-only decision in Revision 4 is superseded. Checkout
+experiences remain; the theme app extension is active again.
+
+### Why offers did not show
+
+Three independent gates each blocked delivery, so fixing one alone was not enough:
+
+1. `recommendations.server.ts` returned `enabled: false` whenever the checkout
+   master switch (`ShopSettings.enabled`) was off, which is the default.
+2. The settings UI had no storefront placement switches and the service ignored
+   the per-shop placement flags that already existed.
+3. Manual (trigger-less) offers were dropped by the engine because it required a
+   trigger match, and the widget never evaluated the real cart on the product
+   page.
+
+### What changed
+
+- **Delivery gating** — `getStorefrontRecommendations` no longer depends on the
+  checkout switch. `productPageEnabled` / `cartPageEnabled` gate each surface and
+  both default to true, so an installed theme block shows eligible offers
+  immediately. Each rule's own `showOnProductPage` / `showOnCartPage` still
+  applies. The shop offer cap (`maxOffers`) is honored as the default limit.
+- **App Proxy** — `/apps/upsell/offers` verifies the query-string HMAC, resolves
+  the shop from the signed `shop` parameter, rate limits 600/min per shop, and
+  evaluates the cart sent by the widget. A viewed product is appended for trigger
+  matching on the product page; `hasCartItems` (real cart) gates manual offers.
+- **Manual / unconditional offers** — a rule with `sources: ["MANUAL"]` and no
+  triggers is eligible whenever the real cart has at least one item and hidden
+  on an empty cart. Covered by engine tests and a proxy test that walks the full
+  eight-step sequence (empty → add A → remove A → add B → add C → remove B →
+  remove C → add A).
+- **Conditions** — the shared tri-state evaluator runs on storefront requests:
+  product/variant membership, quantity comparisons, cart subtotal, total
+  quantity, line count and logged-in state. Unknown values fail closed. Added the
+  `CART_TOTAL_QUANTITY` enum value.
+- **Offer wizard** — loads saved placements, triggers and conditions back into
+  the editor; supports an `ANY_CART` audience (no trigger products), a flat
+  condition builder with AND/OR join, and per-surface placement switches.
+  Advanced/nested condition trees the flat editor cannot round-trip are shown as
+  locked and left untouched on save instead of being rewritten.
+- **Storefront widget** (`extensions/storefront-upsell/assets/upsell.js`) —
+  tracks the cart through the Cart API, hooks `fetch`/`XMLHttpRequest` cart
+  mutations and theme cart events with a 120 ms debounce and a generation guard,
+  drops duplicate payloads, excludes offers already in the cart, disables sold-out
+  variants, adds with `/cart/add.js` plus attribution line-item properties, and
+  logs impressions. Product and cart blocks stay hidden until eligible offers
+  return.
+- **Settings UI** — new **Storefront placements** section with one switch per
+  surface; the checkout switch is relabeled so its scope is unambiguous.
+- **Free testing mode** — `DEV_TESTING_MODE=true` resolves limits to the Pro
+  catalog and makes no Shopify subscription calls or writes; unset/false keeps the
+  production billing path unchanged. Documented in `.env.example` and README.
+
+### Database
+
+- Additive migration `prisma/migrations/20261117150000_storefront_delivery`
+  appends the `CART_TOTAL_QUANTITY` value to the `ConditionField` enum. No table,
+  column or row is dropped or rewritten; existing condition rows are untouched.
+- Applied to the throwaway test database only. **Not applied to the primary
+  `DATABASE_URL`** — run `npm run db:migrate` after review to apply it.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `npm test` | pass — 28 files / 336 tests |
+| `npm run typecheck` | pass |
+| `npm run lint` | pass |
+| `npm run build` | pass |
+| `shopify app build` | pass — all three extensions bundle |
+
+New/updated coverage: `tests/integration/proxy-offers.test.ts` (19 tests: HMAC,
+rate limit, placements, in-cart exclusion, pause/resume, manual eight-step
+sequence, condition AND cases, tenant isolation), the manual-audience block in
+`tests/unit/recommendation-engine.test.ts`, the conditions block in
+`tests/unit/rule-form.test.ts`, and `tests/integration/recommendations.test.ts`
+rewritten for per-placement semantics.
+
+### Known limits / not done
+
+- No live-store verification: no merchant credentials here, so the theme blocks
+  have not been exercised on a real storefront. Everything above is automated-test
+  evidence; adding the blocks in the theme editor and running one real cart is
+  still required.
+- Cart drawers are theme-specific and are not injected into; merchants add the
+  cart block to the cart page.
+- Automatic sources still depend on Shopify cart webhooks.
+- Pre-purchase remains Plus-only; post-purchase remains Shopify-grant-gated.

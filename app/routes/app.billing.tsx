@@ -67,15 +67,14 @@ export default function Billing() {
           </s-stack>
           <s-unordered-list>
             <s-list-item>
-              Recommendation rules: {usage.ruleCount} of{" "}
-              {limitLabel(limits.maxRules)}
+              Offers: {usage.ruleCount} of {limitLabel(limits.maxRules)}
             </s-list-item>
             <s-list-item>
-              Active rules: {usage.activeRuleCount} of{" "}
+              Active offers: {usage.activeRuleCount} of{" "}
               {limitLabel(limits.maxActiveRules)}
             </s-list-item>
             <s-list-item>
-              Offers per rule: up to {limits.maxOffersPerRule}
+              Products per offer: up to {limits.maxOffersPerRule}
             </s-list-item>
             <s-list-item>
               Analytics history: {limits.analyticsWindowDays} days
@@ -110,9 +109,9 @@ export default function Billing() {
         <s-unordered-list>
           {plans.map((entry) => (
             <s-list-item key={entry.id}>
-              {entry.name}: {limitLabel(entry.limits.maxRules)} rule
+              {entry.name}: {limitLabel(entry.limits.maxRules)} offer
               {entry.limits.maxRules === 1 ? "" : "s"}, up to{" "}
-              {entry.limits.maxOffersPerRule} offers per rule,{" "}
+              {entry.limits.maxOffersPerRule} products per offer,{" "}
               {entry.limits.analyticsWindowDays}-day analytics
             </s-list-item>
           ))}
@@ -130,9 +129,10 @@ export default function Billing() {
           <s-paragraph>Not checked against Shopify yet.</s-paragraph>
         )}
         <s-paragraph>
-          Downgrading never deletes rules. Rules above the new limit stay stored
-          but must be paused, and offers must be removed, before they can be
-          edited or activated.
+          Downgrading never deletes offers, products, or analytics. Offers above
+          the new limit stay stored but cannot be activated, and offers with more
+          products than the new per-offer limit must be reduced before they can be
+          saved or activated again.
         </s-paragraph>
       </s-section>
     </s-page>

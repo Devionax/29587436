@@ -13,6 +13,7 @@
 <upsell-offers
   data-endpoint="/apps/upsell/offers"
   data-surface="cart"
+  data-customer-logged-in="{% if customer %}true{% else %}false{% endif %}"
   {%- if block.settings.heading != blank %}
     data-heading="{{ block.settings.heading | escape }}"
   {%- endif %}

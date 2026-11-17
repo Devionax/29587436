@@ -58,3 +58,74 @@ export function parseSurface(raw: unknown): Surface | null {
   if (raw === "cart") return "CART_PAGE";
   return null;
 }
+
+/**
+ * The product page block reports which product is being viewed. It is a
+ * relevance anchor, not a cart line: it never enables cart-only audiences.
+ */
+export function parseViewedProduct(
+  productRaw: unknown,
+  variantRaw: unknown,
+): { productGid: string; variantGid: string | null } | null {
+  if (typeof productRaw !== "string" || !isProductGid(productRaw)) return null;
+  const variantGid =
+    typeof variantRaw === "string" && isVariantGid(variantRaw) ? variantRaw : null;
+  return { productGid: productRaw, variantGid };
+}
+
+const MAX_SUBTOTAL = 100_000_000;
+
+/**
+ * The theme reads `items_subtotal_price` from /cart.js (minor units) and sends
+ * it in shop currency. It is a relevance hint for subtotal conditions, exactly
+ * like cart lines: no price shown to the buyer comes from it.
+ */
+export function parseSubtotal(raw: unknown): number | null {
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > MAX_SUBTOTAL) return null;
+  return Math.round(value * 100) / 100;
+}
+
+export function parseLoggedIn(raw: unknown): boolean | null {
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  return null;
+}
+
+const CART_TOKEN = /^[A-Za-z0-9_-]{1,255}$/;
+
+function validToken(value: string | null | undefined): string | null {
+  if (!value) return null;
+  let token = value;
+  try {
+    token = decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+  // Shopify's cart cookie can carry a query string suffix.
+  token = token.split(/[?|]/)[0];
+  return CART_TOKEN.test(token) ? token : null;
+}
+
+/**
+ * The pseudonymous cart token used by the recently-removed source. The cart
+ * cookie is set by Shopify on the storefront domain and reaches the app proxy;
+ * a query value is accepted only as a relevance hint and is not trusted.
+ */
+export function readCartToken(request: Request): string | null {
+  const url = new URL(request.url);
+  const query = validToken(url.searchParams.get("cartToken"));
+  if (query) return query;
+
+  const cookie = request.headers.get("cookie");
+  if (!cookie) return null;
+
+  for (const part of cookie.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith("cart=")) continue;
+    return validToken(trimmed.slice("cart=".length));
+  }
+
+  return null;
+}

@@ -101,6 +101,7 @@ function run(options: {
   surface?: "PRODUCT_PAGE" | "CART_PAGE";
   limit?: number;
   defaultHeading?: string | null;
+  hasCartItems?: boolean;
 }) {
   return recommendOffers({
     rules: options.rules ?? [rule()],
@@ -111,6 +112,9 @@ function run(options: {
     ...(options.defaultHeading === undefined
       ? {}
       : { defaultHeading: options.defaultHeading }),
+    ...(options.hasCartItems === undefined
+      ? {}
+      : { hasCartItems: options.hasCartItems }),
   });
 }
 
@@ -262,5 +266,64 @@ describe("recommendation engine", () => {
 
   it("ignores zero-quantity cart lines", () => {
     expect(run({ cart: cart({ quantity: 0 }) }).offers).toHaveLength(0);
+  });
+});
+
+describe("manual audience", () => {
+  function manualRule(overrides: Partial<EngineRule> = {}): EngineRule {
+    return rule({ manualAudience: true, triggers: [], ...overrides });
+  }
+
+  it("needs a non-empty real cart", () => {
+    const empty = run({
+      rules: [manualRule()],
+      cart: [],
+      surface: "CART_PAGE",
+      hasCartItems: false,
+    });
+    expect(empty.offers).toHaveLength(0);
+    expect(empty.excluded[0]?.reason).toBe("NO_TRIGGERS");
+
+    const filled = run({
+      rules: [manualRule()],
+      cart: cart(),
+      surface: "CART_PAGE",
+      hasCartItems: true,
+    });
+    expect(filled.offers).toHaveLength(1);
+  });
+
+  it("stays hidden when only the viewed product is in the evaluation cart", () => {
+    const result = run({
+      rules: [manualRule()],
+      cart: cart(),
+      surface: "PRODUCT_PAGE",
+      hasCartItems: false,
+    });
+
+    expect(result.offers).toHaveLength(0);
+  });
+
+  it("respects the placement switches", () => {
+    const result = run({
+      rules: [manualRule({ showOnCartPage: false })],
+      cart: cart(),
+      surface: "CART_PAGE",
+      hasCartItems: true,
+    });
+
+    expect(result.offers).toHaveLength(0);
+    expect(result.excluded[0]?.reason).toBe("SURFACE_DISABLED");
+  });
+
+  it("still requires a trigger match when triggers exist", () => {
+    const result = run({
+      rules: [rule({ triggers: [{ productGid: P_EXTRA, variantGid: "" }] })],
+      cart: cart(),
+      hasCartItems: true,
+    });
+
+    expect(result.offers).toHaveLength(0);
+    expect(result.excluded[0]?.reason).toBe("NO_TRIGGER_MATCH");
   });
 });

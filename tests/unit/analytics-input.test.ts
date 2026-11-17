@@ -28,6 +28,8 @@ describe("storefront event parsing", () => {
     expect(parsed).toEqual({
       eventType: "IMPRESSION",
       surface: "PRODUCT_PAGE",
+      experience: null,
+      declineReason: null,
       offerId: OFFER_ID,
       sessionKey: SESSION,
       dedupeKey: `${SESSION}:IMPRESSION:gid://shopify/ProductVariant/2`,
@@ -43,21 +45,87 @@ describe("storefront event parsing", () => {
     expect(parsed).toHaveLength(MAX_EVENTS_PER_REQUEST);
   });
 
-  it("rejects unknown event types and post-purchase events", () => {
+  it("accepts checkout event types that the platform emits", () => {
+    const parsed = parseStorefrontEventBatch([
+      event({ eventType: "CLICK" }),
+      event({ eventType: "OFFER_ACCEPTED" }),
+      event({ eventType: "OFFER_DECLINED" }),
+    ]);
+
+    expect(parsed.map((item) => item.eventType)).toEqual([
+      "CLICK",
+      "OFFER_ACCEPTED",
+      "OFFER_DECLINED",
+    ]);
+  });
+
+  it("rejects server-derived event types", () => {
     expect(parseStorefrontEventBatch(event({ eventType: "ORDER_ATTRIBUTED" }))).toEqual([]);
-    expect(parseStorefrontEventBatch(event({ eventType: "CLICK" }))).toEqual([]);
+    expect(parseStorefrontEventBatch(event({ eventType: "NOPE" }))).toEqual([]);
+  });
+
+  it("requires a known experience for checkout events", () => {
+    const base = { surface: "checkout", eventType: "IMPRESSION" };
+
+    expect(
+      parseStorefrontEventBatch(event({ ...base, experience: "PRE_PURCHASE" }))[0]?.experience,
+    ).toBe("PRE_PURCHASE");
+    expect(
+      parseStorefrontEventBatch(event({ ...base, experience: "POST_PURCHASE" }))[0]?.experience,
+    ).toBe("POST_PURCHASE");
+    expect(parseStorefrontEventBatch(event(base))).toEqual([]);
+    expect(parseStorefrontEventBatch(event({ ...base, experience: "MID_PURCHASE" }))).toEqual([]);
+  });
+
+  it("keeps legacy surfaces without an experience", () => {
+    const [parsed] = parseStorefrontEventBatch(event({ surface: "cart" }));
+    expect(parsed?.surface).toBe("CART_PAGE");
+    expect(parsed?.experience).toBeNull();
+  });
+
+  it("defaults and validates decline reasons on failures", () => {
+    const base = { surface: "checkout", experience: "POST_PURCHASE" };
+
+    const [defaulted] = parseStorefrontEventBatch(
+      event({ ...base, eventType: "ADD_FAILURE" }),
+    );
+    expect(defaulted?.declineReason).toBe("UNKNOWN");
+
+    const [explicit] = parseStorefrontEventBatch(
+      event({ ...base, eventType: "OFFER_DECLINED", declineReason: "OUT_OF_STOCK" }),
+    );
+    expect(explicit?.declineReason).toBe("OUT_OF_STOCK");
+
+    expect(
+      parseStorefrontEventBatch(
+        event({ ...base, eventType: "ADD_FAILURE", declineReason: "ALIENS" }),
+      ),
+    ).toEqual([]);
+
+    const [ignored] = parseStorefrontEventBatch(
+      event({ ...base, eventType: "IMPRESSION", declineReason: "OUT_OF_STOCK" }),
+    );
+    expect(ignored?.declineReason).toBeNull();
   });
 
   it("rejects unknown surfaces", () => {
-    expect(parseStorefrontEventBatch(event({ surface: "checkout" }))).toEqual([]);
+    expect(parseStorefrontEventBatch(event({ surface: "thank_you" }))).toEqual([]);
   });
 
   it("rejects malformed offer and session identifiers", () => {
-    expect(parseStorefrontEventBatch(event({ offerId: "not-a-cuid" }))).toEqual([]);
+    expect(parseStorefrontEventBatch(event({ offerId: "bad offer id!" }))).toEqual([]);
+    expect(parseStorefrontEventBatch(event({ offerId: "short" }))).toEqual([]);
     expect(parseStorefrontEventBatch(event({ sessionKey: "short" }))).toEqual([]);
     expect(
       parseStorefrontEventBatch(event({ sessionKey: "<script>alert(1)</script>" })),
     ).toEqual([]);
+  });
+
+  it("accepts synthetic automatic offer ids", () => {
+    const [parsed] = parseStorefrontEventBatch(
+      event({ offerId: "auto:cm3xk9q2b0000abcd1234efgh:502:50201" }),
+    );
+    expect(parsed?.offerId).toBe("auto:cm3xk9q2b0000abcd1234efgh:502:50201");
   });
 
   it("derives a dedupe key when the client omits one", () => {

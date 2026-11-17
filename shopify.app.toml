@@ -1,15 +1,14 @@
-# This file stores configurations for your Shopify app.
-client_id = ""
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "a9a6f7eafdf4c62c315c61d772dbc0b2"
+name = "Upsellora"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = true
 
 [access_scopes]
-# Catalog reads power the picker and storefront snapshots. read_orders exists only
-# for order attribution; the handler stores no customer data. Order data is
-# protected customer data, so public distribution needs Shopify approval.
-# Never add write scopes without a feature that requires them.
-scopes = "read_products,read_orders"
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_products,read_orders,write_app_proxy"
 
-# Storefront upsell blocks call /apps/upsell/*. Shopify signs every proxied
-# request; /proxy/offers verifies that signature before doing any work.
 [app_proxy]
 url = "/proxy"
 subpath = "upsell"
@@ -18,49 +17,53 @@ prefix = "apps"
 [webhooks]
 api_version = "2026-10"
 
-  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
-  topics = ["app/uninstalled"]
+  topics = [ "app/uninstalled" ]
 
-  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
   [[webhooks.subscriptions]]
-  topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
 
-  # Catalog synchronization. Handlers re-fetch the product from the Admin API
-  # rather than trusting the webhook payload.
   [[webhooks.subscriptions]]
   uri = "/webhooks/products/create"
-  topics = ["products/create"]
+  topics = [ "products/create" ]
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/products/update"
-  topics = ["products/update"]
+  topics = [ "products/update" ]
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/products/delete"
-  topics = ["products/delete"]
+  topics = [ "products/delete" ]
 
-  # Order attribution. The handler keeps only the offer association carried in
-  # hidden _scu_* line item properties and discards the rest of the payload.
-  # Requires read_orders (protected customer data approval for public apps).
   [[webhooks.subscriptions]]
   uri = "/webhooks/orders/create"
-  topics = ["orders/create"]
+  topics = [ "orders/create" ]
 
-  # Mandatory privacy webhooks for public apps.
-  # See: https://shopify.dev/docs/apps/build/privacy-law-compliance
-  # The app stores no customer PII, so data_request and customers/redact
-  # acknowledge without disclosure; shop/redact deletes the whole tenant.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/carts/create"
+  topics = [ "carts/create" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/carts/update"
+  topics = [ "carts/update" ]
+
   [[webhooks.subscriptions]]
   uri = "/webhooks/customers/data_request"
-  compliance_topics = ["customers/data_request"]
+  compliance_topics = [ "customers/data_request" ]
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/customers/redact"
-  compliance_topics = ["customers/redact"]
+  compliance_topics = [ "customers/redact" ]
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/shop/redact"
-  compliance_topics = ["shop/redact"]
+  compliance_topics = [ "shop/redact" ]
+
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true
