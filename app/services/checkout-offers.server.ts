@@ -135,7 +135,9 @@ function triggersMatch(
   },
   lines: CheckoutLine[],
 ): boolean {
-  if (rule.triggers.length === 0) return false;
+  // A rule without trigger products is the unconditional "any cart" audience:
+  // checkout always contains at least one line, so it matches immediately.
+  if (rule.triggers.length === 0) return lines.length > 0;
   if (rule.matchMode === "ALL") {
     return rule.triggers.every((trigger) =>
       lines.some((line) => triggerMatchesLine(trigger, line)),

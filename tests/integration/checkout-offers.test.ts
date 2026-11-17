@@ -444,6 +444,43 @@ describe("getCheckoutOffers — post-purchase", () => {
     expect(result.offers).toHaveLength(0);
   });
 
+  it("delivers an unconditional offer after any purchase", async () => {
+    process.env.POST_PURCHASE_ENABLED = "true";
+    const shop = await plusShop("checkout-post-manual");
+    await upsertProductSnapshot(shop.id, product(701));
+    await upsertProductSnapshot(shop.id, product(702));
+    await createRule(shop.id, {
+      ...offered(701, 702),
+      triggers: [],
+      sources: ["MANUAL"],
+      experiences: [
+        {
+          experience: "POST_PURCHASE",
+          enabled: true,
+          headline: null,
+          body: null,
+          ctaLabel: null,
+        },
+      ],
+    });
+
+    const base: CheckoutContext = {
+      lines: cartWith(701).lines,
+      orderTotal: 40,
+      orderLineCount: 1,
+      customerLoggedIn: true,
+      shippingCountry: "CA",
+    };
+    const result = await getCheckoutOffers(shop, "POST_PURCHASE", base);
+    expect(result.offers).toHaveLength(1);
+
+    const empty = await getCheckoutOffers(shop, "POST_PURCHASE", {
+      ...base,
+      lines: [],
+    });
+    expect(empty.offers).toHaveLength(0);
+  });
+
   it("evaluates order conditions against the completed purchase", async () => {
     process.env.POST_PURCHASE_ENABLED = "true";
     const shop = await plusShop("checkout-post-conditions");

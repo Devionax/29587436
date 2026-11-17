@@ -335,12 +335,6 @@ function validateStep(
     ) {
       return support.PRE_PURCHASE.note;
     }
-    if (
-      enabled.some((entry) => entry.experience === "POST_PURCHASE") &&
-      !support.POST_PURCHASE.available
-    ) {
-      return support.POST_PURCHASE.note;
-    }
     return null;
   }
 
@@ -425,13 +419,20 @@ export function OfferWizard({
 
   const [experiences, setExperiences] = useState<WizardExperience[]>(() =>
     initial.experiences.map((entry) =>
-      experienceSupport[entry.experience].available
-        ? entry
-        : { ...entry, enabled: false },
+      entry.experience === "PRE_PURCHASE" &&
+      !experienceSupport.PRE_PURCHASE.available
+        ? { ...entry, enabled: false }
+        : entry,
     ),
   );
-  const unavailableConfigured = initial.experiences.filter(
-    (entry) => entry.enabled && !experienceSupport[entry.experience].available,
+  // Pre-purchase is limited by the store's plan, so it is disabled in the form.
+  // Post-purchase is limited by the deployment: the enabled choice is kept and
+  // delivery starts once POST_PURCHASE_ENABLED is on.
+  const planBlockedExperiences = initial.experiences.filter(
+    (entry) => entry.enabled && entry.experience === "PRE_PURCHASE" && !experienceSupport.PRE_PURCHASE.available,
+  );
+  const deploymentBlockedExperiences = initial.experiences.filter(
+    (entry) => entry.enabled && !experienceSupport[entry.experience].available && entry.experience !== "PRE_PURCHASE",
   );
 
   const updateExperience = (experience: Experience, patch: Partial<WizardExperience>) => {
@@ -992,17 +993,31 @@ export function OfferWizard({
                 <s-divider />
                 <s-text type="strong">Checkout experiences</s-text>
                 <s-paragraph color="subdued">
-                  Optional. The server removes any experience this store cannot use.
+                  Optional. Pre-purchase requires Shopify Plus. Post-purchase is saved
+                  here and starts delivering when this deployment enables it.
                 </s-paragraph>
 
-                {unavailableConfigured.length > 0 && (
-                  <s-banner tone="warning" heading="An experience is currently unavailable">
+                {planBlockedExperiences.length > 0 && (
+                  <s-banner tone="warning" heading="An experience is not available on this plan">
                     <s-paragraph>
-                      {unavailableConfigured
+                      {planBlockedExperiences
                         .map((entry) => EXPERIENCE_LABELS[entry.experience])
                         .join(", ")}{" "}
                       was enabled earlier but this store cannot use it right now. Saving
                       will turn it off for this offer; its copy is kept.
+                    </s-paragraph>
+                  </s-banner>
+                )}
+
+                {deploymentBlockedExperiences.length > 0 && (
+                  <s-banner tone="info" heading="An experience is waiting on the deployment">
+                    <s-paragraph>
+                      {deploymentBlockedExperiences
+                        .map((entry) => EXPERIENCE_LABELS[entry.experience])
+                        .join(", ")}{" "}
+                      is enabled on this offer but this deployment cannot deliver it
+                      yet. The setting is kept and starts delivering once the deployment
+                      enables post-purchase access.
                     </s-paragraph>
                   </s-banner>
                 )}
@@ -1031,7 +1046,9 @@ export function OfferWizard({
                           <s-checkbox
                             label={EXPERIENCE_LABELS[experience]}
                             checked={entry.enabled}
-                            disabled={!support.available}
+                            disabled={
+                              experience === "PRE_PURCHASE" && !support.available
+                            }
                             onChange={(event) =>
                               updateExperience(experience, {
                                 enabled: event.currentTarget.checked,

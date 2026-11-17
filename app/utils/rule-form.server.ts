@@ -244,14 +244,9 @@ export function parseRuleForm(
         "Pre-purchase checkout offers require Shopify Plus. Remove it or upgrade the store.";
     }
 
-    if (
-      !errors.experiences &&
-      enabled.some((entry) => entry.experience === "POST_PURCHASE") &&
-      !options.postPurchaseAvailable
-    ) {
-      errors.experiences =
-        "Post-purchase offers are not enabled for this app yet. Shopify must grant post-purchase access before this experience can be turned on.";
-    }
+    // Post-purchase availability is a deployment concern (POST_PURCHASE_ENABLED
+    // and Shopify's grant), not a data problem: the merchant may configure it
+    // now and it starts delivering once the deployment enables it.
   }
 
   const rawSources = parseJsonArray<string>(String(form.get("sources") ?? '["MANUAL"]'));

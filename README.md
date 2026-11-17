@@ -150,6 +150,42 @@ See [PROJECT_LOG.md](PROJECT_LOG.md) for the phase history and known issues.
     `POST_PURCHASE_ENABLED=true` in `.env` and restart the app. The merchant can
     then enable the post-purchase experience on an offer.
 
+## Post-purchase: where it renders and why it can be skipped
+
+Shopify's post-purchase extension does **not** render on the order confirmation
+(thank-you) page. Shopify inserts a separate post-purchase page between payment
+and the thank-you page. If nothing is eligible, the buyer is sent straight to
+"A big thank you" / "Your order is confirmed" — which is what an empty
+post-purchase page looks like.
+
+For the offer to appear, all of these must hold:
+
+1. `extensions/post-purchase-upsell/src/app-origin.js` contains the deployed app
+   origin (the same value as `SHOPIFY_APP_URL`, no trailing slash). While it is
+   empty the extension renders nothing and only logs a console warning.
+2. The extension is deployed (`npx shopify app deploy`) or served by
+   `shopify app dev` with the Shopify browser extension active.
+3. `POST_PURCHASE_ENABLED=true` is set on the running deployment and the app was
+   restarted.
+4. **Settings → checkout offers** is on (`enabled`). It gates both checkout
+   experiences.
+5. The offer is ACTIVE, at least one of its products has a catalog snapshot, and
+   its **Post-purchase page** experience is enabled.
+6. The order matches: the trigger product is in the order, or the offer has no
+   trigger products (unconditional offer), and its conditions pass.
+7. The store is a development store (post-purchase can be used there without
+   approval) or Shopify granted post-purchase access for a live store.
+8. This app is selected as the store's post-purchase app (Shopify admin →
+   Settings → Checkout → post-purchase apps) — only one app can occupy it.
+9. The buyer paid with a card. Shopify does not surface the post-purchase page
+   for wallets and installments (Shop Pay, Apple Pay, Google Pay, PayPal,
+   Klarna, Affirm, AfterPay, Amazon Pay, gift cards), nor for orders with duties
+   and multiple currencies.
+
+To test on a development store, place an order with the **Bogus gateway**
+(credit card), not an accelerated wallet, and watch the browser console of the
+post-purchase page for the Upsellora warning if the page is skipped.
+
 ## Free development and testing mode
 
 `DEV_TESTING_MODE=true` in `.env` skips all plan enforcement so every offer

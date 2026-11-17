@@ -972,3 +972,51 @@ rewritten for per-placement semantics.
   cart block to the cart page.
 - Automatic sources still depend on Shopify cart webhooks.
 - Pre-purchase remains Plus-only; post-purchase remains Shopify-grant-gated.
+
+## Stage 5.1 — Checkout offer eligibility fixes (2026-11-18)
+
+Reported symptom: after a purchase the buyer lands directly on the thank-you page
+and no upsell appears.
+
+### What was wrong
+
+1. The post-purchase page is a separate Shopify page *before* the thank-you
+   page; a buyer sent straight to thank-you means `ShouldRender` returned
+   `render: false`. In this repo the most common cause is an empty
+   `extensions/post-purchase-upsell/src/app-origin.js`, followed by
+   `POST_PURCHASE_ENABLED` being false, checkout offers being disabled in
+   Settings, or the offer not having the post-purchase experience.
+2. `triggersMatch` in `app/services/checkout-offers.server.ts` returned false for
+   rules without trigger products. Since the wizard now defaults new offers to
+   the unconditional "any cart" audience, such an offer could be enabled for
+   post-purchase and still never match. It now matches any non-empty purchase.
+3. `parseRuleForm` rejected an enabled POST_PURCHASE experience whenever the
+   deployment flag was off, so an offer could not be prepared for a later
+   deployment. The wizard also force-disabled the checkbox in that state, which
+   would have silently turned the experience off on the next save.
+
+### What changed
+
+- Unconditional offers are eligible in pre-purchase and post-purchase as soon as
+  the purchase has at least one line.
+- Post-purchase configuration is saved regardless of the deployment flag; the
+  offer editor shows an informational banner that delivery starts when the
+  deployment enables post-purchase, and the checkbox is no longer disabled.
+  Pre-purchase keeps its hard Plus restriction.
+- README documents the page order, the nine delivery prerequisites, the
+  one-app-per-store selection, and the payment methods that suppress the page.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `npm test` | pass — 28 files / 337 tests |
+| `npm run typecheck` | pass |
+| `npm run lint` | pass |
+| `npm run build` | pass |
+
+### Not verified
+
+- A real post-purchase page on a development store. `APP_ORIGIN` and
+  `POST_PURCHASE_ENABLED` are deployment values that only the operator can
+  supply; no merchant credentials exist here.

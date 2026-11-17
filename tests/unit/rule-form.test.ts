@@ -317,7 +317,7 @@ describe("rule form validation", () => {
     if (!blocked.ok) expect(blocked.errors.experiences).toMatch(/Plus/);
   });
 
-  it("blocks post-purchase unless the deployment enables it", () => {
+  it("keeps a post-purchase configuration the deployment cannot deliver yet", () => {
     const parsed = parseRuleForm(
       form({
         experiences: JSON.stringify([
@@ -326,8 +326,11 @@ describe("rule form validation", () => {
       }),
       { prePurchaseAvailable: true },
     );
-    expect(parsed.ok).toBe(false);
-    if (!parsed.ok) expect(parsed.errors.experiences).toMatch(/post-purchase access/);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.input.experiences).toContainEqual(
+      expect.objectContaining({ experience: "POST_PURCHASE", enabled: true }),
+    );
   });
 
   it("keeps disabled experiences without delivering them", () => {
