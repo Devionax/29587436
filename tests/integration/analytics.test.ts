@@ -67,8 +67,6 @@ describe("analytics ingestion and order attribution", () => {
       status: "ACTIVE",
       priority: 10,
       matchMode: "ANY",
-      showOnProductPage: true,
-      showOnCartPage: true,
       triggers: [{ productGid: "gid://shopify/Product/501" }],
       offers: [
         { productGid: "gid://shopify/Product/502", variantGid: OFFER_VARIANT },

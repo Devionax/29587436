@@ -144,10 +144,6 @@ export function parseRuleForm(
     errors.status = "Choose a valid status.";
   }
 
-  // Placement checkboxes are absent from the payload when unchecked.
-  const showOnProductPage = form.get("showOnProductPage") !== null;
-  const showOnCartPage = form.get("showOnCartPage") !== null;
-
   const matchMode = text(form, "matchMode") || "ANY";
   if (!MATCH_MODES.includes(matchMode as MatchMode)) {
     errors.matchMode = "Choose a valid match mode.";
@@ -223,16 +219,10 @@ export function parseRuleForm(
     }
 
     const enabled = experiences.filter((entry) => entry.enabled);
-    // An offer needs at least one delivery surface: a storefront placement, a
-    // checkout experience, or both. Storefront placements work on every plan.
-    if (
-      !errors.experiences &&
-      enabled.length === 0 &&
-      !showOnProductPage &&
-      !showOnCartPage
-    ) {
-      errors.experiences =
-        "Choose at least one placement (product page or cart page) or checkout experience.";
+    // The post-purchase page is the only placement this release delivers, so an
+    // offer needs at least one enabled checkout experience.
+    if (!errors.experiences && enabled.length === 0) {
+      errors.experiences = "Choose at least one checkout experience.";
     }
 
     if (
@@ -466,8 +456,6 @@ export function parseRuleForm(
       matchMode: matchMode as MatchMode,
       heading: heading || null,
       maxOffers,
-      showOnProductPage,
-      showOnCartPage,
       sources,
       experiences,
       conditions,

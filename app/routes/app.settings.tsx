@@ -67,8 +67,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       enabled: form.get("enabled") !== null,
       defaultHeading: String(form.get("defaultHeading") ?? ""),
       maxOffers,
-      productPageEnabled: form.get("productPageEnabled") !== null,
-      cartPageEnabled: form.get("cartPageEnabled") !== null,
+      // Storefront placements are retired for this release; saving settings
+      // keeps them off so no legacy flag can re-enable product or cart pages.
+      productPageEnabled: false,
+      cartPageEnabled: false,
     });
     return { ok: true as const, settings, error: null };
   } catch (error) {
@@ -93,10 +95,6 @@ export default function Settings() {
   const [enabled, setEnabled] = useState(settings.enabled);
   const [heading, setHeading] = useState(settings.defaultHeading);
   const [maxOffers, setMaxOffers] = useState(String(settings.maxOffers));
-  const [productPageEnabled, setProductPageEnabled] = useState(
-    settings.productPageEnabled,
-  );
-  const [cartPageEnabled, setCartPageEnabled] = useState(settings.cartPageEnabled);
 
   return (
     <s-page heading="Settings">
@@ -105,8 +103,7 @@ export default function Settings() {
           {data?.ok && (
             <s-banner tone="success" heading="Settings saved">
               <s-paragraph>
-                Storefront blocks pick up the change on the next page load or cart
-                update. Checkout extensions read these values on the next checkout load.
+                Checkout extensions read these values on the next checkout load.
               </s-paragraph>
             </s-banner>
           )}
@@ -122,27 +119,12 @@ export default function Settings() {
             </s-banner>
           )}
 
-          <s-section heading="Storefront placements">
-            <s-stack direction="block" gap="base">
-              <s-switch
-                label="Show offers on product pages"
-                name="productPageEnabled"
-                checked={productPageEnabled}
-                onChange={(event) => setProductPageEnabled(event.currentTarget.checked)}
-              />
-              <s-switch
-                label="Show offers on cart pages"
-                name="cartPageEnabled"
-                checked={cartPageEnabled}
-                onChange={(event) => setCartPageEnabled(event.currentTarget.checked)}
-              />
-              <s-paragraph color="subdued">
-                These switches control the theme app extension blocks. Add the
-                Upsellora product and cart page blocks in the theme editor once; after
-                that, switching a placement off hides it here without touching the theme.
-                Only active offers that target the placement are shown.
-              </s-paragraph>
-            </s-stack>
+          <s-section heading="Placement">
+            <s-paragraph>
+              Offers are delivered on the post-purchase page, after payment and before
+              the thank-you page. Product page and cart page placements are not part of
+              this release, so there is nothing to configure here.
+            </s-paragraph>
           </s-section>
 
           <s-section heading="Checkout behavior">
@@ -154,10 +136,9 @@ export default function Settings() {
                 onChange={(event) => setEnabled(event.currentTarget.checked)}
               />
               <s-paragraph color="subdued">
-                Applies to the checkout experiences only. Product and cart page
-                placements keep running when this is off. When off, both checkout
-                experiences render nothing for buyers; offers, conditions, schedules,
-                and analytics data are kept.
+                Applies to the post-purchase page. When off, no checkout experience
+                renders for buyers; offers, conditions, schedules, and analytics data
+                are kept.
               </s-paragraph>
               <s-text-field
                 label="Default heading"
@@ -181,9 +162,9 @@ export default function Settings() {
           <s-section heading="Checkout experiences">
             <s-stack direction="block" gap="base">
               <s-paragraph color="subdued">
-                Each offer chooses one or both experiences. A placement only renders
-                when the experience is available to this store, checkout offers are on,
-                and the offer is active.
+                Each offer chooses one or both experiences. An offer renders only when
+                the experience is available to this store, checkout offers are on, and
+                the offer is active.
               </s-paragraph>
 
               <s-box padding="base" background="subdued" borderRadius="large-100">
@@ -259,9 +240,8 @@ export default function Settings() {
 
       <s-section slot="aside" heading="Turning offers off">
         <s-paragraph>
-          Switching a placement off hides the storefront block; switching checkout
-          offers off stops both checkout experiences. Neither deletes offers, conditions,
-          schedules, or analytics.
+          Switching checkout offers off stops both checkout experiences. It does not
+          delete offers, conditions, schedules, or analytics.
         </s-paragraph>
       </s-section>
     </s-page>

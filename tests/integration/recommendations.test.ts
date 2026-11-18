@@ -77,14 +77,12 @@ describe("storefront recommendations", () => {
     await upsertProductSnapshot(shopA.id, snapshot());
     await upsertProductSnapshot(shopA.id, secondSnapshot());
 
-    await createRule(shopA.id, {
+    const rule = await createRule(shopA.id, {
       name: "Shoe care",
       status: "ACTIVE",
       priority: 10,
       matchMode: "ANY",
       heading: "Complete your pair",
-      showOnProductPage: true,
-      showOnCartPage: false,
       triggers: [{ productGid: TRIGGER, variantGid: null }],
       offers: [
         {
@@ -103,6 +101,31 @@ describe("storefront recommendations", () => {
         },
       ],
     });
+
+    // Storefront placements are retired for this release, so a legacy shop is
+    // simulated directly: the rows below can only be produced by older data,
+    // never by createRule or the merchant UI.
+    await prisma.recommendationRule.update({
+      where: { id: rule.id },
+      data: { showOnProductPage: true, showOnCartPage: false },
+    });
+    await prisma.shopSettings.update({
+      where: { shopId: shopA.id },
+      data: { productPageEnabled: true, cartPageEnabled: true },
+    });
+  });
+
+  it("stores every new rule with storefront placements off", async () => {
+    const saved = await createRule(shopA.id, {
+      name: "Checkout-only rule",
+      status: "DRAFT",
+      matchMode: "ANY",
+      triggers: [{ productGid: TRIGGER, variantGid: null }],
+      offers: [{ productGid: OFFER, variantGid: OFFER_VARIANT }],
+    });
+
+    expect(saved.showOnProductPage).toBe(false);
+    expect(saved.showOnCartPage).toBe(false);
   });
 
   afterAll(async () => {
@@ -149,6 +172,7 @@ describe("storefront recommendations", () => {
       ...DEFAULT_SETTINGS,
       enabled: true,
       maxOffers: 1,
+      productPageEnabled: true,
     });
 
     const result = await getStorefrontRecommendations(shopA.id, {
@@ -158,7 +182,12 @@ describe("storefront recommendations", () => {
 
     expect(result.offers).toHaveLength(1);
 
-    await updateSettings(shopA.id, { ...DEFAULT_SETTINGS, enabled: true, maxOffers: 3 });
+    await updateSettings(shopA.id, {
+      ...DEFAULT_SETTINGS,
+      enabled: true,
+      maxOffers: 3,
+      productPageEnabled: true,
+    });
   });
 
   it("respects per-rule surface toggles", async () => {
@@ -180,7 +209,9 @@ describe("storefront recommendations", () => {
   });
 
   it("stops returning offers when the rule is paused", async () => {
-    const [rule] = await prisma.recommendationRule.findMany({ where: { shopId: shopA.id } });
+    const [rule] = await prisma.recommendationRule.findMany({
+      where: { shopId: shopA.id, status: "ACTIVE" },
+    });
     await setRuleStatus(shopA.id, rule.id, "PAUSED");
 
     const result = await getStorefrontRecommendations(shopA.id, {
@@ -197,6 +228,7 @@ describe("storefront recommendations", () => {
       ...DEFAULT_SETTINGS,
       enabled: true,
       productPageEnabled: false,
+      cartPageEnabled: true,
     });
 
     const product = await getStorefrontRecommendations(shopA.id, {
@@ -212,7 +244,11 @@ describe("storefront recommendations", () => {
     });
     expect(cart.enabled).toBe(true);
 
-    await updateSettings(shopA.id, { ...DEFAULT_SETTINGS, enabled: true });
+    await updateSettings(shopA.id, {
+      ...DEFAULT_SETTINGS,
+      enabled: true,
+      productPageEnabled: true,
+    });
   });
 });
 

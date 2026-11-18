@@ -72,8 +72,6 @@ export type RuleWriteInput = {
   matchMode?: MatchMode;
   heading?: string | null;
   maxOffers?: number | null;
-  showOnProductPage?: boolean;
-  showOnCartPage?: boolean;
   /** Priority order matters; the engine concatenates sources in this order. */
   sources?: OfferSource[];
   showOnCheckout?: boolean;
@@ -120,8 +118,10 @@ function ruleFields(
     matchMode: input.matchMode,
     heading: input.heading ?? null,
     maxOffers: input.maxOffers ?? null,
-    showOnProductPage: input.showOnProductPage,
-    showOnCartPage: input.showOnCartPage,
+    // Storefront placements are retired for this release; every write clears
+    // them so no rule can opt into a surface the app no longer delivers.
+    showOnProductPage: false,
+    showOnCartPage: false,
     sources: input.sources,
     showOnCheckout,
     autoLookbackHours: input.autoLookbackHours,
@@ -499,8 +499,6 @@ export async function duplicateRule(
     matchMode: source.matchMode,
     heading: source.heading,
     maxOffers: source.maxOffers,
-    showOnProductPage: source.showOnProductPage,
-    showOnCartPage: source.showOnCartPage,
     sources: source.sources,
     // The copied rows are authoritative; the legacy flag is derived from them.
     experiences,

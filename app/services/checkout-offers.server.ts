@@ -49,6 +49,7 @@ export type CheckoutOffer = {
   variantGid: string;
   productTitle: string;
   variantTitle: string;
+  imageUrl: string | null;
   price: string;
   compareAtPrice: string | null;
   currencyCode: string | null;
@@ -175,6 +176,7 @@ function conditionContext(
 
 type SnapshotView = {
   title: string;
+  imageUrl: string | null;
   status: string;
   availableForSale: boolean;
   currencyCode: string | null;
@@ -205,6 +207,7 @@ async function loadOfferSnapshots(
       snapshot.productGid,
       {
         title: snapshot.title,
+        imageUrl: snapshot.imageUrl,
         status: snapshot.status,
         availableForSale: snapshot.availableForSale,
         currencyCode: snapshot.currencyCode,
@@ -291,10 +294,24 @@ export async function getCheckoutOffers(
   };
   const eligible: EligibleRule[] = [];
 
+  // Kept so an empty result can be explained instead of silently skipped.
+  const skippedRules = {
+    experienceDisabled: 0,
+    triggerMiss: 0,
+    conditionMiss: 0,
+    invalidTree: 0,
+  };
+
   for (const rule of rules) {
     const experienceCopy = rule.experiences[0];
-    if (!experienceCopy?.enabled) continue;
-    if (!triggersMatch(rule, context.lines)) continue;
+    if (!experienceCopy?.enabled) {
+      skippedRules.experienceDisabled += 1;
+      continue;
+    }
+    if (!triggersMatch(rule, context.lines)) {
+      skippedRules.triggerMiss += 1;
+      continue;
+    }
 
     let tree: ConditionGroupNode[];
     try {
@@ -302,6 +319,7 @@ export async function getCheckoutOffers(
       validateConditionTree(tree);
     } catch (error) {
       // A stored tree that no longer validates must not decide a sale.
+      skippedRules.invalidTree += 1;
       logger.warn("Skipping rule with an invalid condition tree", {
         shopId: shop.id,
         ruleId: rule.id,
@@ -310,11 +328,24 @@ export async function getCheckoutOffers(
       continue;
     }
 
-    if (!conditionsMatch(tree, contextForConditions)) continue;
+    if (!conditionsMatch(tree, contextForConditions)) {
+      skippedRules.conditionMiss += 1;
+      continue;
+    }
     eligible.push({ ...rule, experienceCopy });
   }
 
+  const diagnostics = () => ({
+    shopId: shop.id,
+    experience,
+    lines: context.lines.length,
+    activeRules: rules.length,
+    eligibleRules: eligible.length,
+    skippedRules,
+  });
+
   if (eligible.length === 0) {
+    logger.info("Checkout offers: no rule matched this checkout", diagnostics());
     return { enabled: true, heading: null, offers: [] };
   }
 
@@ -335,6 +366,15 @@ export async function getCheckoutOffers(
   const offers: CheckoutOffer[] = [];
   let heading: string | null = null;
 
+  const rejectedOffers = {
+    snapshotMissing: 0,
+    productUnavailable: 0,
+    variantUnavailable: 0,
+    alreadyInPurchase: 0,
+    duplicateClaim: 0,
+    ruleCapReached: 0,
+  };
+
   for (const rule of eligible) {
     if (offers.length >= limit) break;
 
@@ -348,13 +388,38 @@ export async function getCheckoutOffers(
       const snapshot = snapshots.get(offer.productGid);
       const variant = snapshot?.variants.get(offer.variantGid);
 
-      if (!snapshot || snapshot.status !== "ACTIVE") continue;
-      if (!snapshot.availableForSale || !variant?.availableForSale) continue;
-      if (linesProducts.has(offer.productGid)) continue;
-      if (linesVariants.has(offer.variantGid)) continue;
-      if (claimedProducts.has(offer.productGid)) continue;
-      if (claimedVariants.has(offer.variantGid)) continue;
-      if (ruleOfferCount >= ruleCap) break;
+      if (!snapshot || snapshot.status !== "ACTIVE") {
+        rejectedOffers.snapshotMissing += 1;
+        continue;
+      }
+      if (!snapshot.availableForSale) {
+        rejectedOffers.productUnavailable += 1;
+        continue;
+      }
+      if (!variant?.availableForSale) {
+        rejectedOffers.variantUnavailable += 1;
+        continue;
+      }
+      if (linesProducts.has(offer.productGid)) {
+        rejectedOffers.alreadyInPurchase += 1;
+        continue;
+      }
+      if (linesVariants.has(offer.variantGid)) {
+        rejectedOffers.alreadyInPurchase += 1;
+        continue;
+      }
+      if (claimedProducts.has(offer.productGid)) {
+        rejectedOffers.duplicateClaim += 1;
+        continue;
+      }
+      if (claimedVariants.has(offer.variantGid)) {
+        rejectedOffers.duplicateClaim += 1;
+        continue;
+      }
+      if (ruleOfferCount >= ruleCap) {
+        rejectedOffers.ruleCapReached += 1;
+        break;
+      }
 
       offers.push({
         id: offer.id,
@@ -362,6 +427,7 @@ export async function getCheckoutOffers(
         variantGid: offer.variantGid,
         productTitle: snapshot.title,
         variantTitle: variant.title,
+        imageUrl: snapshot.imageUrl,
         price: variant.price,
         compareAtPrice: variant.compareAtPrice,
         currencyCode: snapshot.currencyCode,
@@ -387,6 +453,13 @@ export async function getCheckoutOffers(
           "You may also like";
       }
     }
+  }
+
+  if (offers.length === 0) {
+    logger.info("Checkout offers: rules matched but no offer was sellable", {
+      ...diagnostics(),
+      rejectedOffers,
+    });
   }
 
   return { enabled: true, heading: offers.length > 0 ? heading : null, offers };

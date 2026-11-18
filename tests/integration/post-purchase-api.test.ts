@@ -3,6 +3,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { action as changesetAction } from "../../app/routes/api.post-purchase.changeset";
 import { action as eventsAction } from "../../app/routes/api.post-purchase.events";
 import { action as offersAction } from "../../app/routes/api.post-purchase.offers";
+import { action as proxyChangesetAction } from "../../app/routes/proxy.post-purchase.changeset";
+import { action as proxyEventsAction } from "../../app/routes/proxy.post-purchase.events";
+import { action as proxyOffersAction } from "../../app/routes/proxy.post-purchase.offers";
 import type { CatalogProduct } from "../../app/services/catalog.server";
 import { upsertProductSnapshot } from "../../app/services/catalog.server";
 import { createRule } from "../../app/services/rules.server";
@@ -478,5 +481,88 @@ describe("POST /api/post-purchase/events", () => {
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toBe("no_valid_events");
+  });
+});
+
+describe("App Proxy aliases used by the post-purchase extension", () => {
+  function proxyRequest(path: string, body: unknown, origin?: string): Request {
+    return request(`/proxy/post-purchase/${path}`, { body, origin });
+  }
+
+  it("serves offers when the token arrives only in the body", async () => {
+    const response = (await proxyOffersAction({
+      request: proxyRequest("offers", { token: tokenFor(shop.shopDomain) }, `https://${shop.shopDomain}`),
+    } as never)) as Response;
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+
+    const body = await response.json();
+    expect(body.enabled).toBe(true);
+    expect(body.offers.map((offer: { id: string }) => offer.id)).toEqual([
+      offerId,
+    ]);
+  });
+
+  it("signs a changeset when the token arrives only in the body", async () => {
+    const response = (await proxyChangesetAction({
+      request: proxyRequest("changeset", {
+        token: tokenFor(shop.shopDomain),
+        offerId,
+      }),
+    } as never)) as Response;
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(typeof body.token).toBe("string");
+    expect(body.token.split(".")).toHaveLength(3);
+  });
+
+  it("accepts analytics events sent through the proxy", async () => {
+    const response = (await proxyEventsAction({
+      request: proxyRequest("events", {
+        token: tokenFor(shop.shopDomain),
+        events: [
+          {
+            eventType: "IMPRESSION",
+            surface: "checkout",
+            experience: "POST_PURCHASE",
+            offerId,
+            sessionKey: "proxy-session",
+            dedupeKey: "proxy-session:IMPRESSION",
+          },
+        ],
+      }),
+    } as never)) as Response;
+
+    expect(response.status).toBe(204);
+    expect(
+      await prisma.analyticsEvent.findUnique({
+        where: { dedupeKey: `${shop.id}:proxy-session:IMPRESSION` },
+      }),
+    ).not.toBeNull();
+  });
+
+  it("still verifies a body token's signature", async () => {
+    const [header, payload] = tokenFor(shop.shopDomain).split(".");
+    const forged = `${header}.${payload}.${base64url("forged")}`;
+
+    const response = (await proxyOffersAction({
+      request: proxyRequest("offers", { token: forged }),
+    } as never)) as Response;
+
+    expect(response.status).toBe(401);
+  });
+
+  it("answers the CORS preflight", async () => {
+    const response = (await proxyOffersAction({
+      request: request("/proxy/post-purchase/offers", {
+        method: "OPTIONS",
+        origin: `https://${shop.shopDomain}`,
+      }),
+    } as never)) as Response;
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
   });
 });

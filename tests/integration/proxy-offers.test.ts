@@ -117,42 +117,51 @@ describe("app proxy offers endpoint", () => {
     );
 
     // Deliberately no settings row for shopA: storefront delivery must not
-    // depend on the merchant turning checkout offers on first.
+    // depend on the merchant turning checkout offers on first. Placement rows
+    // below are seeded directly because the app can no longer write them.
     const triggerRule = await createRule(shopA.id, {
       name: "Trigger offer",
       status: "ACTIVE",
       priority: 10,
       matchMode: "ANY",
       heading: "Pairs with your purchase",
-      showOnProductPage: true,
-      showOnCartPage: false,
       triggers: [{ productGid: TRIGGER_PRODUCT, variantGid: TRIGGER_VARIANT }],
       offers: [{ productGid: OFFER_PRODUCT, variantGid: OFFER_VARIANT }],
     });
     triggerRuleId = triggerRule.id;
+    await prisma.recommendationRule.update({
+      where: { id: triggerRuleId },
+      data: { showOnProductPage: true, showOnCartPage: false },
+    });
+    await prisma.shopSettings.upsert({
+      where: { shopId: shopA.id },
+      create: { shopId: shopA.id, productPageEnabled: true, cartPageEnabled: true },
+      update: { productPageEnabled: true, cartPageEnabled: true },
+    });
 
     // Manual offer: no trigger products, sells to any non-empty cart.
-    await createRule(shopManual.id, {
+    const manualRule = await createRule(shopManual.id, {
       name: "Any cart offer",
       status: "ACTIVE",
       priority: 10,
       heading: "Add a cloth",
       sources: ["MANUAL"],
-      showOnProductPage: false,
-      showOnCartPage: true,
       triggers: [],
       offers: [
         { productGid: MANUAL_OFFER_PRODUCT, variantGid: MANUAL_OFFER_VARIANT },
       ],
     });
+    await prisma.recommendationRule.update({
+      where: { id: manualRule.id },
+      data: { showOnCartPage: true },
+    });
 
-    await createRule(shopConditions.id, {
+    const conditionsRule = await createRule(shopConditions.id, {
       name: "Big cart offer",
       status: "ACTIVE",
       priority: 10,
       heading: "Stock up",
       sources: ["MANUAL"],
-      showOnCartPage: true,
       triggers: [],
       offers: [
         { productGid: CONDITION_OFFER_PRODUCT, variantGid: CONDITION_OFFER_VARIANT },
@@ -166,6 +175,10 @@ describe("app proxy offers endpoint", () => {
           ],
         },
       ],
+    });
+    await prisma.recommendationRule.update({
+      where: { id: conditionsRule.id },
+      data: { showOnCartPage: true },
     });
   });
 

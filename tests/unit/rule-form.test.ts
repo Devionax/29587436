@@ -77,7 +77,7 @@ describe("rule form validation", () => {
     if (!parsed.ok) expect(parsed.errors.priority).toBeTruthy();
   });
 
-  it("requires a delivery surface: a placement or an enabled experience", () => {
+  it("requires an enabled checkout experience", () => {
     const empty = parseRuleForm(form({ experiences: "[]" }));
     expect(empty.ok).toBe(false);
     if (!empty.ok) expect(empty.errors.experiences).toBeTruthy();
@@ -90,9 +90,13 @@ describe("rule form validation", () => {
       }),
     );
     expect(disabled.ok).toBe(false);
-    if (!disabled.ok) expect(disabled.errors.experiences).toMatch(/placement/i);
+    if (!disabled.ok) {
+      expect(disabled.errors.experiences).toBe(
+        "Choose at least one checkout experience.",
+      );
+    }
 
-    // A storefront placement alone is enough; checkout is optional.
+    // Retired storefront flags can no longer stand in for a checkout experience.
     const storefrontOnly = parseRuleForm(
       form({
         showOnProductPage: "on",
@@ -101,11 +105,7 @@ describe("rule form validation", () => {
         ]),
       }),
     );
-    expect(storefrontOnly.ok).toBe(true);
-    if (storefrontOnly.ok) {
-      expect(storefrontOnly.input.showOnProductPage).toBe(true);
-      expect(storefrontOnly.input.showOnCartPage).toBe(false);
-    }
+    expect(storefrontOnly.ok).toBe(false);
   });
 
   it("rejects unreadable or invalid experience payloads", () => {

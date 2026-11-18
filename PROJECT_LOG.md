@@ -1020,3 +1020,78 @@ and no upsell appears.
 - A real post-purchase page on a development store. `APP_ORIGIN` and
   `POST_PURCHASE_ENABLED` are deployment values that only the operator can
   supply; no merchant credentials exist here.
+
+## Stage 5.2 — Post-purchase connectivity fix and placement retirement (2026-11-18)
+
+Reported symptom: order `AZNEFXNEX` on `decoop-xnjjs53i.myshopify.com` went
+straight to "Your order is confirmed" with no Upsellora page.
+
+### Root cause (verified in the built bundle, not assumed)
+
+`extensions/post-purchase-upsell/src/app-origin.js` ships an empty constant, and
+`ShouldRender` returned `{ render: false }` whenever it was empty — before any
+network call. The deployed bundle therefore could never show an offer, regardless
+of backend state. Secondary causes fixed in Stage 5.1 (unconditional offers
+rejected by `triggersMatch`, post-purchase configuration force-disabled while
+the deployment flag was off) are retained.
+
+### What changed
+
+- The extension now reaches the backend through the App Proxy registered in
+  `shopify.app.toml` (`/apps/upsell/*` -> `/proxy/*`):
+  `https://{shop}/apps/upsell/post-purchase/{offers,changeset,events}`. The shop
+  domain comes from `inputData.shop.domain`, falling back to the JWT payload;
+  `APP_ORIGIN` remains only as an optional override that switches to
+  `${APP_ORIGIN}/api/post-purchase/*`.
+- The token is sent as `Authorization: Bearer` and duplicated in the JSON body,
+  because proxy/CDN layers may strip headers. `authenticatePostPurchase` accepts
+  a body token (bounded 8 KB JSON clone) only after the header check fails; HMAC
+  verification is unchanged.
+- Three App Proxy alias routes were added: `proxy.post-purchase.offers.tsx`,
+  `.changeset.tsx`, `.events.tsx`.
+- `ShouldRender` no longer short-circuits on a missing origin: it logs and returns
+  `render: true` only after real offers are stored; it now warns explicitly for
+  missing origin, non-2xx, `enabled !== true`, and an empty offer list, so a
+  skipped page is explainable from the browser console.
+- `Render` uses `Image source={imageUrl}`, shows product title, headline, variant,
+  compare-at/price, description, CTA, and an inline error; accept posts to
+  `/changeset`, then `/events`, and calls `done()`; decline only records events and
+  never touches the purchase.
+- The backend logs why nothing was sold: `skippedRules` (experience disabled,
+  trigger miss, condition miss, invalid tree) and `rejectedOffers` (snapshot
+  missing, product/variant unavailable, already in purchase, duplicate claim, cap
+  reached).
+- Storefront placements retired from the active workflow: rule writes force
+  `showOnProductPage`/`showOnCartPage` to false, the wizard's placement step is
+  replaced by a checkout-experience explanation, Settings no longer exposes the
+  two switches, and defaults are false. Existing rows and columns are preserved;
+  the theme extension stays on disk but delivers nothing.
+- Proposed migration `20261118130000_retire_storefront_placements` only sets the
+  four legacy flags to false (UPDATE only, no DDL). **Not applied to the primary
+  database**; needs explicit approval, together with
+  `20261117150000_storefront_delivery`.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `npm test` | pass — 28 files / 343 tests |
+| `npm run typecheck` | pass |
+| `npm run lint` | pass |
+| `npm run build` | pass |
+| `npx shopify app build` | pass — post-purchase bundle contains `apps/upsell/post-purchase`, and the old "set APP_ORIGIN" warning string is gone |
+
+New coverage: five App Proxy alias tests in
+`tests/integration/post-purchase-api.test.ts` (offers/changeset with a body-only
+token, events through the proxy, forged body signature -> 401, CORS preflight),
+plus the placement-retirement rewrite of the rule-form, recommendations and
+proxy-offers suites.
+
+### Not verified / requires operator action
+
+- The rebuilt extension must be shipped (`shopify app dev` or
+  `shopify app deploy`); the store still runs the previous bundle.
+- The deployment must have `POST_PURCHASE_ENABLED=true`, plus `SHOPIFY_API_KEY`
+  and `SHOPIFY_API_SECRET` for JWT verification.
+- A real order on the Bogus gateway is still the only end-to-end proof; no
+  merchant credentials exist here.

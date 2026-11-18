@@ -176,8 +176,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     maxOffers: offer.maxOffers === null ? "" : String(offer.maxOffers),
     matchMode: offer.matchMode,
     audience: offer.triggers.length > 0 ? "TRIGGERS" : "ANY_CART",
-    showOnProductPage: offer.showOnProductPage,
-    showOnCartPage: offer.showOnCartPage,
     sources: offer.sources,
     autoLookbackHours: offer.autoLookbackHours,
     autoMaxOffers: offer.autoMaxOffers === null ? "" : String(offer.autoMaxOffers),

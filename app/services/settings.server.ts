@@ -5,9 +5,9 @@ import { InvalidInputError } from "../utils/errors";
  * Shop-level settings. Every function is scoped by the authenticated shopId;
  * only the writable fields below are ever copied from input.
  *
- * `enabled` gates checkout experiences only. Storefront delivery is controlled
- * per placement by productPageEnabled and cartPageEnabled, both on by default
- * so a merchant installing the theme blocks sees offers immediately.
+ * `enabled` gates checkout delivery. The storefront placement switches are kept
+ * for the legacy theme blocks but default to off: the post-purchase page is the
+ * only placement this release delivers.
  */
 
 export type SettingsInput = {
@@ -22,8 +22,8 @@ export const DEFAULT_SETTINGS: SettingsInput = {
   enabled: false,
   defaultHeading: "You may also like",
   maxOffers: 3,
-  productPageEnabled: true,
-  cartPageEnabled: true,
+  productPageEnabled: false,
+  cartPageEnabled: false,
 };
 
 export async function getSettings(shopId: string): Promise<SettingsInput> {

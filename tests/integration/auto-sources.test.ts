@@ -56,7 +56,12 @@ describe("automatic recommendation sources", () => {
     await upsertProductSnapshot(shop.id, snapshot(REMOVED, REMOVED_VARIANT, "Removed product"));
     await upsertProductSnapshot(shop.id, snapshot(IN_CART, IN_CART_VARIANT, "Already in cart"));
 
-    await updateSettings(shop.id, { ...DEFAULT_SETTINGS, enabled: true, maxOffers: 5 });
+    await updateSettings(shop.id, {
+      ...DEFAULT_SETTINGS,
+      enabled: true,
+      maxOffers: 5,
+      productPageEnabled: true,
+    });
 
     rule = await createRule(shop.id, {
       name: "Cart-driven",
@@ -64,14 +69,19 @@ describe("automatic recommendation sources", () => {
       priority: 10,
       matchMode: "ANY",
       heading: "Picked from cart activity",
-      showOnProductPage: true,
-      showOnCartPage: false,
       sources: ["REPEATED_ACTIVITY", "RECENTLY_REMOVED"],
       autoLookbackHours: 24,
       autoMinRepeats: 2,
       autoMaxOffers: 5,
       triggers: [{ productGid: TRIGGER, variantGid: null }],
       offers: [],
+    });
+
+    // Legacy placement flag: seeds what older app versions could store, since
+    // the current workflow only writes checkout offers.
+    await prisma.recommendationRule.update({
+      where: { id: rule.id },
+      data: { showOnProductPage: true, showOnCartPage: false },
     });
 
     await prisma.cartActivity.createMany({
@@ -180,8 +190,6 @@ describe("automatic recommendation sources", () => {
       matchMode: rule.matchMode,
       heading: rule.heading,
       maxOffers: rule.maxOffers,
-      showOnProductPage: rule.showOnProductPage,
-      showOnCartPage: rule.showOnCartPage,
       showOnCheckout: rule.showOnCheckout,
       sources: rule.sources,
       autoLookbackHours: rule.autoLookbackHours,
@@ -195,6 +203,13 @@ describe("automatic recommendation sources", () => {
         variantGid: trigger.variantGid || null,
       })),
       offers: [],
+    });
+
+    // Saving clears the retired placement flags, so restore the legacy row to
+    // keep this test about the schedule rather than about placement.
+    await prisma.recommendationRule.update({
+      where: { id: rule.id },
+      data: { showOnProductPage: true },
     });
 
     const result = await getStorefrontRecommendations(shop.id, {

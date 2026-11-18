@@ -20,6 +20,11 @@ export function proxyJson(
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
+      // Extension requests arrive cross-origin from Shopify's checkout origin;
+      // the proxy authenticates the caller, never cookies, so a wildcard is safe.
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       ...extraHeaders,
     },
   });

@@ -13,9 +13,10 @@ import { sourceLabel } from "./ui";
  * submitted together; only the visible step changes. Client validation is a
  * convenience — the server parses and validates the same fields again.
  *
- * An offer can be delivered on the product page, the cart page, in checkout, or
- * several at once. Eligibility is either trigger products ("when these are in
- * the cart") or a manual audience ("when any product is in the cart").
+ * This release delivers offers on the post-purchase page only; product and cart
+ * page placements are retired. Eligibility is either trigger products ("when
+ * these are in the cart") or a manual audience ("when any product is in the
+ * cart").
  */
 
 export type WizardTrigger = {
@@ -82,8 +83,6 @@ export type OfferWizardDraft = {
   maxOffers: string;
   matchMode: "ANY" | "ALL";
   audience: WizardAudience;
-  showOnProductPage: boolean;
-  showOnCartPage: boolean;
   sources: OfferSource[];
   autoLookbackHours: number;
   autoMaxOffers: string;
@@ -103,7 +102,7 @@ const STEPS = [
   "Sources",
   "Products",
   "Automatic rules",
-  "Placements",
+  "Checkout",
   "Eligibility",
   "Conditions",
   "Review",
@@ -145,7 +144,7 @@ const STEP_ERROR_KEYS: string[][] = [
   ["sources"],
   ["offers"],
   ["autoLookbackHours", "autoMaxOffers", "autoMinRepeats"],
-  ["experiences", "placements"],
+  ["experiences"],
   ["triggers", "matchMode", "startsAt", "endsAt"],
   ["conditions", "conditionJoin"],
   ["form", "status"],
@@ -326,8 +325,8 @@ function validateStep(
 
   if (step === 4) {
     const enabled = draft.experiences.filter((entry) => entry.enabled);
-    if (!draft.showOnProductPage && !draft.showOnCartPage && enabled.length === 0) {
-      return "Choose at least one placement (product page or cart page) or checkout experience.";
+    if (enabled.length === 0) {
+      return "Choose at least one checkout experience.";
     }
     if (
       enabled.some((entry) => entry.experience === "PRE_PURCHASE") &&
@@ -378,7 +377,7 @@ export function OfferWizard({
   errors?: Record<string, string>;
   planMaxOffers: number;
   experienceSupport: WizardExperienceSupport;
-  /** Non-null when checkout delivery is unavailable; storefront still works. */
+  /** Non-null when no checkout experience can be delivered right now. */
   blockedReason: string | null;
   /** True when stored conditions are more advanced than this flat builder. */
   conditionsLocked?: boolean;
@@ -410,8 +409,6 @@ export function OfferWizard({
   const [triggers, setTriggers] = useState<WizardTrigger[]>(initial.triggers);
   const [matchMode, setMatchMode] = useState<"ANY" | "ALL">(initial.matchMode);
   const [audience, setAudience] = useState<WizardAudience>(initial.audience);
-  const [showOnProductPage, setShowOnProductPage] = useState(initial.showOnProductPage);
-  const [showOnCartPage, setShowOnCartPage] = useState(initial.showOnCartPage);
   const [startsAt, setStartsAt] = useState(initial.startsAt);
   const [endsAt, setEndsAt] = useState(initial.endsAt);
   const [conditions, setConditions] = useState<WizardCondition[]>(initial.conditions);
@@ -455,8 +452,6 @@ export function OfferWizard({
     maxOffers,
     matchMode,
     audience,
-    showOnProductPage,
-    showOnCartPage,
     sources,
     autoLookbackHours: Number(autoLookback) || 168,
     autoMaxOffers: autoMax,
@@ -595,8 +590,6 @@ export function OfferWizard({
       />
       <input type="hidden" name="offers" value={JSON.stringify(offers)} />
       <input type="hidden" name="experiences" value={JSON.stringify(experiences)} />
-      {showOnProductPage && <input type="hidden" name="showOnProductPage" value="on" />}
-      {showOnCartPage && <input type="hidden" name="showOnCartPage" value="on" />}
       <input
         type="hidden"
         name="conditions"
@@ -617,8 +610,8 @@ export function OfferWizard({
           {blockedReason && (
             <s-banner tone="info" heading="Checkout delivery is unavailable for this store">
               <s-paragraph>
-                {blockedReason} Product page and cart page placements still work, so an
-                offer can be saved and shown on the storefront without checkout.
+                {blockedReason} The offer can still be saved; it starts delivering once
+                a checkout experience is available.
               </s-paragraph>
             </s-banner>
           )}
@@ -950,51 +943,12 @@ export function OfferWizard({
           </div>
 
           <div hidden={step !== 4}>
-            <s-section heading="Placements">
+            <s-section heading="Checkout experience">
               <s-stack direction="block" gap="base">
                 <s-paragraph>
-                  Choose where this offer may appear. Storefront placements work on
-                  every Shopify plan; checkout experiences below are limited by this
-                  store&apos;s plan and app approvals.
-                </s-paragraph>
-
-                <s-box padding="base" border="base" borderRadius="large-100">
-                  <s-stack direction="block" gap="small">
-                    <s-checkbox
-                      label="Product page"
-                      checked={showOnProductPage}
-                      onChange={(event) =>
-                        setShowOnProductPage(event.currentTarget.checked)
-                      }
-                    />
-                    <s-paragraph color="subdued">
-                      Shown by the theme app extension block on product pages whose
-                      product matches this offer.
-                    </s-paragraph>
-                  </s-stack>
-                </s-box>
-
-                <s-box padding="base" border="base" borderRadius="large-100">
-                  <s-stack direction="block" gap="small">
-                    <s-checkbox
-                      label="Cart page"
-                      checked={showOnCartPage}
-                      onChange={(event) =>
-                        setShowOnCartPage(event.currentTarget.checked)
-                      }
-                    />
-                    <s-paragraph color="subdued">
-                      Shown by the theme app extension block on the cart page and kept in
-                      sync as the cart changes.
-                    </s-paragraph>
-                  </s-stack>
-                </s-box>
-
-                <s-divider />
-                <s-text type="strong">Checkout experiences</s-text>
-                <s-paragraph color="subdued">
-                  Optional. Pre-purchase requires Shopify Plus. Post-purchase is saved
-                  here and starts delivering when this deployment enables it.
+                  This release delivers offers on the post-purchase page, after the
+                  buyer completes payment and before the thank-you page. Product page
+                  and cart page placements are no longer offered.
                 </s-paragraph>
 
                 {planBlockedExperiences.length > 0 && (
@@ -1435,15 +1389,6 @@ export function OfferWizard({
                       : "Off"}
                   </s-list-item>
                   <s-list-item>
-                    <s-text type="strong">Placements:</s-text>{" "}
-                    {[
-                      showOnProductPage ? "Product page" : null,
-                      showOnCartPage ? "Cart page" : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ") || "None"}
-                  </s-list-item>
-                  <s-list-item>
                     <s-text type="strong">Checkout experiences:</s-text>{" "}
                     {experiences
                       .filter((entry) => entry.enabled)
@@ -1532,11 +1477,9 @@ export function emptyWizardDraft(
     heading: "",
     maxOffers: "",
     matchMode: "ANY",
-    // A new offer starts as a manual (any-cart) offer with storefront
-    // placements on; trigger products are opt-in on the Eligibility step.
+    // A new offer starts as a manual (any-cart) offer; trigger products are
+    // opt-in on the Eligibility step.
     audience: "ANY_CART",
-    showOnProductPage: true,
-    showOnCartPage: true,
     sources: ["MANUAL"],
     autoLookbackHours: 168,
     autoMaxOffers: "",

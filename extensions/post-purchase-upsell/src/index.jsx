@@ -5,6 +5,7 @@ import {
   CalloutBanner,
   extend,
   Heading,
+  Image,
   render,
   Separator,
   Text,
@@ -23,10 +24,15 @@ import { APP_ORIGIN } from "./app-origin.js";
  * `Render` shows those offers; accepting signs a changeset on the backend and
  * applies it to the order. Any failure hides the page or shows a message,
  * never blocks the buyer from reaching the thank-you page.
+ *
+ * Requests go through the shop's App Proxy (`/apps/upsell/post-purchase/*`),
+ * which stays valid across dev tunnels and deployments. `APP_ORIGIN` overrides
+ * that base when the proxy is not the right path.
  */
 
 const POST_PURCHASE = "POST_PURCHASE";
 const MAX_OFFERS = 3;
+const PROXY_PATH = "/apps/upsell/post-purchase";
 
 function randomKey() {
   let key = "";
@@ -66,40 +72,92 @@ function formatMoney(amount, currencyCode) {
   return value.toFixed(2) + (currencyCode ? ` ${currencyCode}` : "");
 }
 
-function postJson(path, token, body) {
-  return fetch(`${APP_ORIGIN}${path}`, {
+/**
+ * The token payload is signed, not encrypted, so the shop domain can be read
+ * from it to choose the backend host. It is never trusted for anything else:
+ * the backend re-verifies the signature on every request.
+ */
+function shopDomainFromToken(token) {
+  try {
+    const segment = String(token || "").split(".")[1];
+    if (!segment) return null;
+    const padded = segment.replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+    const domain = JSON.parse(json)?.input_data?.shop?.domain;
+    return typeof domain === "string" && domain.trim() !== ""
+      ? domain.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function domainFromInput(inputData) {
+  const domain = inputData?.shop?.domain;
+  return typeof domain === "string" && domain.trim() !== ""
+    ? domain.trim()
+    : null;
+}
+
+/** Base URL for `/offers`, `/changeset` and `/events`, or null. */
+function apiRoot(inputData) {
+  const override = String(APP_ORIGIN || "").trim().replace(/\/+$/, "");
+  if (override) return `${override}/api/post-purchase`;
+
+  const domain =
+    domainFromInput(inputData) ?? shopDomainFromToken(inputData?.token);
+  if (!domain) return null;
+
+  return `https://${domain}${PROXY_PATH}`;
+}
+
+function postJson(root, path, token, body) {
+  return fetch(`${root}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(body || {}),
+    // App Proxy forwards headers and body; the token is repeated in the body
+    // so the request still authenticates if the header is stripped.
+    body: JSON.stringify({ ...(body || {}), token }),
   });
 }
 
 extend("Checkout::PostPurchase::ShouldRender", async ({ inputData, storage }) => {
-  if (!APP_ORIGIN) {
+  const root = apiRoot(inputData);
+  if (!root) {
     console.warn(
-      "Upsellora: set APP_ORIGIN in src/app-origin.js before deploying the post-purchase extension.",
+      "Upsellora: no backend origin available for the post-purchase page.",
     );
     return { render: false };
   }
 
   try {
-    const response = await postJson(
-      "/api/post-purchase/offers",
-      inputData.token,
-      {},
-    );
-    if (!response.ok) return { render: false };
+    const response = await postJson(root, "/offers", inputData.token, {});
 
-    const data = await response.json();
-    if (
-      !data ||
-      data.enabled !== true ||
-      !Array.isArray(data.offers) ||
-      data.offers.length === 0
-    ) {
+    if (!response.ok) {
+      console.warn(
+        `Upsellora: offer request failed with status ${response.status}.`,
+      );
+      return { render: false };
+    }
+
+    const data = await response.json().catch(() => null);
+
+    if (!data || data.enabled !== true) {
+      console.warn(
+        "Upsellora: post-purchase delivery is disabled for this shop.",
+      );
+      return { render: false };
+    }
+
+    // An empty list means every rule was filtered out; the backend logs the
+    // per-rule reasons and this keeps the Shopify-side outcome visible too.
+    if (!Array.isArray(data.offers) || data.offers.length === 0) {
+      console.warn(
+        "Upsellora: no eligible offer for this purchase, skipping the page.",
+      );
       return { render: false };
     }
 
@@ -110,7 +168,8 @@ extend("Checkout::PostPurchase::ShouldRender", async ({ inputData, storage }) =>
     });
 
     return { render: true };
-  } catch {
+  } catch (error) {
+    console.warn("Upsellora: offer request threw.", error?.message || error);
     return { render: false };
   }
 });
@@ -124,6 +183,7 @@ function App() {
   const heading = typeof initial.heading === "string" ? initial.heading : null;
   const sessionKey =
     typeof initial.sessionKey === "string" ? initial.sessionKey : "post-purchase";
+  const root = apiRoot(inputData);
 
   const [added, setAdded] = useState({});
   const [pendingId, setPendingId] = useState(null);
@@ -131,10 +191,8 @@ function App() {
   const impressedRef = useRef(false);
 
   function sendEvents(events) {
-    if (!APP_ORIGIN || events.length === 0) return Promise.resolve();
-    return postJson("/api/post-purchase/events", inputData.token, {
-      events,
-    }).catch(() => {
+    if (!root || events.length === 0) return Promise.resolve();
+    return postJson(root, "/events", inputData.token, { events }).catch(() => {
       // Analytics must never block the page.
     });
   }
@@ -162,6 +220,8 @@ function App() {
   }, [offers]);
 
   async function accept(offer) {
+    if (!root || added[offer.id] || pendingId !== null) return;
+
     setPendingId(offer.id);
     setError(null);
     await sendEvents([
@@ -170,11 +230,9 @@ function App() {
     ]);
 
     try {
-      const response = await postJson(
-        "/api/post-purchase/changeset",
-        inputData.token,
-        { offerId: offer.id },
-      );
+      const response = await postJson(root, "/changeset", inputData.token, {
+        offerId: offer.id,
+      });
       if (!response.ok) throw new Error("changeset_not_signed");
 
       const data = await response.json();
@@ -219,15 +277,28 @@ function App() {
 
       {offers.map((offer) => (
         <BlockStack key={offer.id} spacing="tight">
-          <Heading>{offer.headline}</Heading>
+          {offer.imageUrl ? (
+            <Image source={offer.imageUrl} description={offer.productTitle} />
+          ) : null}
+          <Heading>{offer.productTitle || offer.headline}</Heading>
+          {offer.headline && offer.headline !== offer.productTitle ? (
+            <TextBlock emphasized>{offer.headline}</TextBlock>
+          ) : null}
           {offer.variantTitle && offer.variantTitle !== "Default Title" ? (
             <TextBlock subdued>{offer.variantTitle}</TextBlock>
           ) : null}
           {offer.body ? <TextBlock>{offer.body}</TextBlock> : null}
           <Tiles>
-            <TextBlock emphasized>
-              {formatMoney(offer.price, offer.currencyCode)}
-            </TextBlock>
+            <TextContainer>
+              {offer.compareAtPrice ? (
+                <Text role="deletion">
+                  {formatMoney(offer.compareAtPrice, offer.currencyCode)}{" "}
+                </Text>
+              ) : null}
+              <Text emphasized>
+                {formatMoney(offer.price, offer.currencyCode)}
+              </Text>
+            </TextContainer>
             <TextContainer alignment="trailing">
               <Button
                 onPress={() => accept(offer)}
@@ -246,11 +317,7 @@ function App() {
         </BlockStack>
       ))}
 
-      {error ? (
-        <TextBlock appearance="critical" emphasized>
-          {error}
-        </TextBlock>
-      ) : null}
+      {error ? <TextBlock emphasized>{error}</TextBlock> : null}
 
       <Button onPress={finish} disabled={busy} subdued>
         Continue to thank you

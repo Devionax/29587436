@@ -1,33 +1,33 @@
 # Upsellora
 
 A multi-tenant Shopify app that increases average order value with merchant-managed
-product recommendations on the **product page**, in the **cart**, and **inside checkout**.
+upsell offers shown on Shopify's **post-purchase page**.
 
-- **Product page and cart page** — a theme app extension renders the offers in
-  theme blocks. The widget evaluates the real cart through the Storefront Cart
-  API, recalculates after every cart change, and adds offers without duplicates.
-- **Pre-purchase** — a checkout UI extension block on Shopify Plus.
-- **Post-purchase** — a post-purchase extension once Shopify grants this app access.
+- **Post-purchase** — a post-purchase extension offers products after payment and
+  before the thank-you page. This is the only placement this release delivers.
+- **Pre-purchase** — a checkout UI extension block for Shopify Plus stores.
+- Product page and cart page theme blocks are retired from the merchant workflow
+  in this release; their code and existing data are kept for a later storefront
+  release.
 
 > Package name: `smart-checkout-upsell`.
 
 ## Project status
 
 **Production code complete for V1.** The admin uses the Upsellora structure —
-Dashboard, Offers, Analytics, Settings — with a seven-step offer workflow that
-combines manual product selection with automatic sources (recently removed and
-repeatedly added cart products). All four delivery surfaces are implemented:
+Dashboard, Offers, Analytics, Settings — with an offer workflow that combines
+manual product selection with automatic sources (recently removed and repeatedly
+added cart products). Delivery today is checkout-only:
 
-- `extensions/storefront-upsell` ships the `product-upsell` and `cart-upsell`
-  theme blocks. They call `/apps/upsell/offers` through the signed App Proxy and
-  read the live cart with `/cart.js`; manual (trigger-less) offers and
-  condition-based offers are evaluated server-side.
+- `extensions/post-purchase-upsell` runs `Checkout::PostPurchase::ShouldRender`
+  and `Render`, calls `/apps/upsell/post-purchase/*` through the shop's App Proxy
+  with the Shopify-issued purchase token, and applies signed changesets.
 - `extensions/pre-purchase-upsell` renders a `purchase.checkout.block.render` block
   and calls `/api/checkout/offers` and `/api/checkout/events` with a verified
   Shopify session token.
-- `extensions/post-purchase-upsell` runs `Checkout::PostPurchase::ShouldRender`
-  and `Render`, calls `/api/post-purchase/*` with the Shopify-issued purchase
-  token, and applies signed changesets to the order.
+- `extensions/storefront-upsell` still contains the `product-upsell` and
+  `cart-upsell` theme blocks for a future release. Since offers can no longer opt
+  into those placements, no offer is delivered there.
 
 **Pending external approvals and live QA:** pre-purchase needs a Shopify Plus
 store; post-purchase needs Shopify to grant post-purchase access and
@@ -101,18 +101,18 @@ See [PROJECT_LOG.md](PROJECT_LOG.md) for the phase history and known issues.
    the active subscription through the Admin API and caches it (`Subscription`)
    for storefront and enforcement paths, refreshing at most hourly.
 
-7. **Point both extensions at this deployment**
+7. **Point the pre-purchase extension at this deployment**
 
-   Each extension compiles its backend origin into the bundle because Shopify
-   does not proxy extension calls or inject environment variables at extension
-   build time. Set `APP_ORIGIN` in both files, with no trailing slash, to the same
-   origin as `SHOPIFY_APP_URL`:
+   The pre-purchase checkout extension compiles its backend origin into the
+   bundle because Shopify does not inject environment variables at extension
+   build time. Set `APP_ORIGIN` in
+   `extensions/pre-purchase-upsell/src/app-origin.js`, with no trailing slash, to
+   the same origin as `SHOPIFY_APP_URL`.
 
-   - `extensions/pre-purchase-upsell/src/app-origin.js`
-   - `extensions/post-purchase-upsell/src/app-origin.js`
-
-   While the constant is empty, each extension renders nothing and logs one
-   warning; nothing breaks.
+   The post-purchase extension needs no origin: it calls the shop's App Proxy
+   (`https://{shop}/apps/upsell/post-purchase/*`), which survives dev tunnels and
+   origin changes. `extensions/post-purchase-upsell/src/app-origin.js` is only an
+   optional override.
 
 8. **Deploy the app and extensions**
 
@@ -122,26 +122,15 @@ See [PROJECT_LOG.md](PROJECT_LOG.md) for the phase history and known issues.
 
    This pushes the app version, registers the webhook subscriptions (including
    the mandatory privacy topics), the App Proxy (`/apps/upsell/*` → `/proxy/*`)
-   and all three extensions (theme app extension, pre-purchase, post-purchase).
+   and the extensions in `extensions/`. The storefront theme extension still
+   deploys (so existing theme blocks keep loading without errors) but delivers
+   nothing now that placements are retired.
 
-9. **Add the storefront blocks in the theme editor**
+9. **Leave the storefront theme blocks out**
 
-   In **Online Store → Themes → Customize**:
-
-   - Open the **Product** template and add the **Upsell offers** block from
-     "Apps" (block: `product-upsell`). Optionally set a heading override.
-   - Open the **Cart** template and add the **Upsell offers (cart)** block
-     (`cart-upsell`).
-
-   The blocks stay hidden until the endpoint returns eligible offers. Whether a
-   placement delivers is controlled in the app under **Settings → Storefront
-   placements** (product page and cart page, both on by default). The
-   "show offers in checkout" switch gates checkout only and does not affect the
-   theme blocks.
-
-   Offers appear when the offer is active, the rule's placement for that surface
-   is on, its trigger/condition matches the current cart, and the merchant has a
-   plan that allows it.
+   Product page and cart page upsell blocks are not part of this release. Offers
+   can no longer opt into those placements, so the blocks would render nothing
+   even if added. Do not add them in the theme editor.
 
 10. **Turn on post-purchase only after Shopify grants access**
 
@@ -160,9 +149,11 @@ post-purchase page looks like.
 
 For the offer to appear, all of these must hold:
 
-1. `extensions/post-purchase-upsell/src/app-origin.js` contains the deployed app
-   origin (the same value as `SHOPIFY_APP_URL`, no trailing slash). While it is
-   empty the extension renders nothing and only logs a console warning.
+1. The extension is deployed (`npx shopify app deploy`) or served by
+   `shopify app dev` with the Shopify browser extension active, and the App Proxy
+   `/apps/upsell` is registered. The extension reaches the backend through
+   `https://{shop}/apps/upsell/post-purchase/*`, so no origin needs to be baked
+   into the bundle.
 2. The extension is deployed (`npx shopify app deploy`) or served by
    `shopify app dev` with the Shopify browser extension active.
 3. `POST_PURCHASE_ENABLED=true` is set on the running deployment and the app was
@@ -277,8 +268,8 @@ app/
 extensions/
   pre-purchase-upsell/     Checkout UI extension (purchase.checkout.block.render)
   post-purchase-upsell/    Post-purchase UI extension (legacy extend/render API)
-  storefront-upsell/       Theme app extension: product-page and cart-page blocks,
-                           Cart API widget (upsell.js), styles and locales
+  storefront-upsell/       Retired theme app extension (product-page and cart-page
+                           blocks). Kept on disk, no longer deployed or offered.
 prisma/
   schema.prisma            Tenants, rules, catalog snapshots, analytics, billing
   migrations/              Committed SQL migrations
@@ -376,9 +367,11 @@ stored.
   `POST_PURCHASE_ENABLED=false`.
 - Checkout extensions receive shipping country only when protected customer data
   access is granted; otherwise country conditions fail closed.
-- Theme app extension app blocks require Online Store 2.0 themes. Both blocks are
-  added by the merchant in the theme editor; cart drawers are theme-specific and
-  are not injected into.
+- Storefront placements are retired for this release: the app no longer delivers
+  product-page or cart-page offers, the offer workflow has no placement switches,
+  and writes force those flags off. The `storefront-upsell` theme app extension
+  is kept on disk so existing installs do not break, but it is not part of the
+  active workflow and needs no theme-editor setup.
 - Shopify Starter has no theme and is not supported.
 - `read_orders` (order attribution) is protected customer data: a public app needs
   Shopify approval before order webhooks deliver real data. Until then everything
