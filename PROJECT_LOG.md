@@ -1095,3 +1095,41 @@ proxy-offers suites.
   and `SHOPIFY_API_SECRET` for JWT verification.
 - A real order on the Bogus gateway is still the only end-to-end proof; no
   merchant credentials exist here.
+
+## Stage 5.3 — Deployment audit: why the store never saw the extension (2026-11-18)
+
+The store still showed no post-purchase page after Stage 5.2, so the platform
+layer was audited instead of the offer code. Findings, all verifiable from the
+repo and the public repository state:
+
+1. **No production deployment exists.** `shopify.app.toml` still carries the
+   template placeholder `application_url = "https://shopify.dev/apps/default-app-home"`
+   and a matching `redirect_urls`. There is no host configuration (no
+   `vercel.json`, `render.yaml`, `fly.toml`), the Dockerfile was the only deploy
+   artifact and it could not build, and no Shopify CLI login is cached on this
+   machine. The admin the merchant used was a `shopify app dev` tunnel, not a
+   deployed app.
+2. **The published source is stale.** `origin/main` (`Devionax/29587436`) was
+   last pushed 2026-11-16; the post-purchase connectivity fixes are three
+   unpushed commits. Any hosting that deploys from GitHub runs the version that
+   short-circuited on an empty `APP_ORIGIN`.
+3. **Post-purchase preview has its own entry point.** Shopify renders local
+   post-purchase extensions only through `shopify app dev` + the Shopify browser
+   extension + the Dev Console link (`p` → checkout post-purchase), followed by
+   a Bogus-gateway order. A normal storefront order with no dev server running
+   cannot show the page; nothing has to be wrong in the code for that to happen.
+4. **Zero telemetry confirms it.** The shop has no analytics rows at all, so the
+   extension has never reached `ShouldRender` on this store — consistent with 1–3.
+
+Changes made:
+
+- `Dockerfile` rewritten as a two-stage build. The previous image ran
+  `npm ci --omit=dev` and then `npm run build`, which cannot work because the
+  build needs the dev dependencies; any container deploy would have failed at
+  image build.
+- No application code changed in this stage; the offer path was already covered
+  by the 343-test suite.
+
+Still requires the operator: a hosted URL, `shopify app deploy`, install and
+selection as the store's post-purchase app — or the dev-console preview flow.
+
